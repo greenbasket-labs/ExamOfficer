@@ -48,6 +48,20 @@ struct ClassSubject {
     subject_name: String,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Exam {
+    id: i64,
+    name: String,
+    session: String,
+    term: String,
+    exam_date: String,
+    class_id: i64,
+    class_name: String,
+    subject_id: i64,
+    subject_name: String,
+}
+
 fn database_connection(app: &tauri::AppHandle) -> Result<Connection, String> {
     let directory = app
         .path()
@@ -116,6 +130,27 @@ fn database_connection(app: &tauri::AppHandle) -> Result<Connection, String> {
                 ON students(class_id);",
         )
         .map_err(|e| format!("Cannot initialize local database: {e}"))?;
+
+    // Examination records are scoped to the configured academic calendar and
+    // to subjects already assigned to the selected class.
+    connection.execute_batch(
+        "CREATE TABLE IF NOT EXISTS exams (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            session TEXT NOT NULL,
+            term TEXT NOT NULL,
+            exam_date TEXT NOT NULL DEFAULT '',
+            class_id INTEGER NOT NULL,
+            subject_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(name COLLATE NOCASE, session, term, class_id, subject_id),
+            FOREIGN KEY(class_id, subject_id)
+                REFERENCES class_subjects(class_id, subject_id)
+                ON DELETE RESTRICT
+        );
+        CREATE INDEX IF NOT EXISTS idx_exams_class_subject
+            ON exams(class_id, subject_id);"
+    ).map_err(|e| format!("Cannot initialize examination tables: {e}"))?;
 
     // Safely add configurable school sections to existing databases.
     connection.execute_batch(
@@ -712,6 +747,87 @@ fn delete_student(app: tauri::AppHandle, id: i64) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn get_exams(app: tauri::AppHandle) -> Result<Vec<Exam>, String> {
+    let connection = database_connection(&app)?;
+    let mut statement = connection.prepare(
+        "SELECT e.id, e.name, e.session, e.term, e.exam_date,
+                e.class_id, c.name, e.subject_id, s.name
+         FROM exams e
+         JOIN school_classes c ON c.id = e.class_id
+         JOIN subjects s ON s.id = e.subject_id
+         ORDER BY e.session DESC, e.term, e.name COLLATE NOCASE, c.name, s.name"
+    ).map_err(|e| format!("Cannot prepare examination query: {e}"))?;
+
+    let rows = statement.query_map([], |row| {
+        Ok(Exam {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            session: row.get(2)?,
+            term: row.get(3)?,
+            exam_date: row.get(4)?,
+            class_id: row.get(5)?,
+            class_name: row.get(6)?,
+            subject_id: row.get(7)?,
+            subject_name: row.get(8)?,
+        })
+    }).map_err(|e| format!("Cannot read examinations: {e}"))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Cannot read examination records: {e}"))
+}
+
+#[tauri::command]
+fn create_exam(
+    app: tauri::AppHandle,
+    name: String,
+    session: String,
+    term: String,
+    exam_date: String,
+    class_id: i64,
+    subject_id: i64,
+) -> Result<i64, String> {
+    let name = clean_name(name, "Examination name")?;
+    let session = clean_name(session, "Academic session")?;
+    let term = clean_name(term, "Term")?;
+    let exam_date = exam_date.trim().to_string();
+
+    if exam_date.len() > 10 || (!exam_date.is_empty() && exam_date.len() != 10) {
+        return Err("Examination date must use YYYY-MM-DD format.".to_string());
+    }
+    if !matches!(term.as_str(), "First Term" | "Second Term" | "Third Term") {
+        return Err("Select a valid academic term in School Setup.".to_string());
+    }
+
+    let connection = database_connection(&app)?;
+    let assignment_exists: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM class_subjects
+            WHERE class_id = ?1 AND subject_id = ?2
+        )",
+        params![class_id, subject_id],
+        |row| row.get(0),
+    ).map_err(|e| format!("Cannot validate class and subject: {e}"))?;
+
+    if !assignment_exists {
+        return Err("The selected subject is not assigned to this class.".to_string());
+    }
+
+    connection.execute(
+        "INSERT INTO exams (name, session, term, exam_date, class_id, subject_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![name, session, term, exam_date, class_id, subject_id],
+    ).map_err(|e| {
+        if e.to_string().contains("UNIQUE constraint failed") {
+            "An examination with this name already exists for this class, subject, session, and term.".to_string()
+        } else {
+            format!("Cannot create examination: {e}")
+        }
+    })?;
+
+    Ok(connection.last_insert_rowid())
+}
+
+#[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
@@ -740,7 +856,9 @@ pub fn run() {
             remove_class_subject,
             get_students,
             create_student,
-            delete_student
+            delete_student,
+            get_exams,
+            create_exam
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

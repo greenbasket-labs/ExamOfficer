@@ -70,6 +70,18 @@ type Student = {
   admissionDate: string;
 };
 
+type Exam = {
+  id: number;
+  name: string;
+  session: string;
+  term: string;
+  examDate: string;
+  classId: number;
+  className: string;
+  subjectId: number;
+  subjectName: string;
+};
+
 function App() {
   const [page, setPage] = useState<Page>("Dashboard");
   const [schoolName, setSchoolName] = useState("");
@@ -110,6 +122,16 @@ function App() {
   const [studentError, setStudentError] = useState("");
   const [studentMessage, setStudentMessage] = useState("");
   const [studentBusy, setStudentBusy] = useState(false);
+
+  const [exams, setExams] = useState<Exam[]>([]);
+  const [examName, setExamName] = useState("");
+  const [examDate, setExamDate] = useState("");
+  const [examClassId, setExamClassId] = useState<number | "">("");
+  const [examSubjectId, setExamSubjectId] = useState<number | "">("");
+  const [examClassSubjects, setExamClassSubjects] = useState<ClassSubject[]>([]);
+  const [examError, setExamError] = useState("");
+  const [examMessage, setExamMessage] = useState("");
+  const [examBusy, setExamBusy] = useState(false);
 
   // Keep a class selected whenever classes are available.
   useEffect(() => {
@@ -158,6 +180,51 @@ function App() {
     const result = await invoke<Student[]>("get_students");
     setStudents(result);
     return result;
+  };
+
+  const loadExams = async () => {
+    const result = await invoke<Exam[]>("get_exams");
+    setExams(result);
+    return result;
+  };
+
+  const loadExamClassSubjects = async (classId: number) => {
+    const result = await invoke<ClassSubject[]>("get_class_subjects", { classId });
+    setExamClassSubjects(result);
+    setExamSubjectId("");
+    return result;
+  };
+
+  const createExam = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setExamError("");
+    setExamMessage("");
+
+    if (!examName.trim() || examClassId === "" || examSubjectId === "") {
+      setExamError("Enter an examination name and select a class and assigned subject.");
+      return;
+    }
+
+    setExamBusy(true);
+    try {
+      await invoke<number>("create_exam", {
+        name: examName.trim(),
+        session: session.trim(),
+        term,
+        examDate,
+        classId: examClassId,
+        subjectId: examSubjectId,
+      });
+      await loadExams();
+      setExamName("");
+      setExamDate("");
+      setExamSubjectId("");
+      setExamMessage("Examination created successfully.");
+    } catch (error) {
+      setExamError(String(error));
+    } finally {
+      setExamBusy(false);
+    }
   };
   
   const loadSections = async () => {
@@ -486,6 +553,39 @@ function App() {
     return () => {
       active = false;
     };
+  }, [page]);
+
+  useEffect(() => {
+    if (page !== "Marks Entry") return;
+
+    let active = true;
+    async function loadExamWorkspace() {
+      setExamError("");
+      setExamMessage("");
+      try {
+        const [loadedClasses, loadedExams] = await Promise.all([
+          invoke<SchoolClass[]>("get_classes"),
+          invoke<Exam[]>("get_exams"),
+        ]);
+        if (!active) return;
+        setClasses(loadedClasses);
+        setExams(loadedExams);
+        const initialClassId = loadedClasses.some((item) => item.id === examClassId)
+          ? examClassId
+          : loadedClasses[0]?.id ?? "";
+        setExamClassId(initialClassId);
+        if (initialClassId !== "") {
+          const assignments = await invoke<ClassSubject[]>("get_class_subjects", { classId: initialClassId });
+          if (active) setExamClassSubjects(assignments);
+        } else {
+          setExamClassSubjects([]);
+        }
+      } catch (error) {
+        if (active) setExamError(String(error));
+      }
+    }
+    void loadExamWorkspace();
+    return () => { active = false; };
   }, [page]);
 
   useEffect(() => {
@@ -1361,7 +1461,101 @@ function App() {
               </section>
             </section>
           )}
-          {page !== "Dashboard" && page !== "School Setup" && page !== "Classes & Subjects" && page !== "Students" && (
+          {page === "Marks Entry" && (
+            <section className="inner-page">
+              <div className="eyebrow">EXAMINATIONS</div>
+              <h1>Exam creation</h1>
+              <p className="page-subtitle">Create examination records for the current academic session and term. Marks entry will use these records in the next stage.</p>
+
+              {examError && <p role="alert" className="error-message">{examError}</p>}
+              {examMessage && <p role="status" className="save-message">{examMessage}</p>}
+
+              <section className="panel academic-panel">
+                <div className="section-heading">
+                  <div>
+                    <h2>Create an examination</h2>
+                    <p>Select a class and one of its assigned subjects.</p>
+                  </div>
+                </div>
+                <form className="assignment-form" onSubmit={createExam}>
+                  <label className="field">
+                    <span>Examination name *</span>
+                    <input value={examName} onChange={(event) => setExamName(event.target.value)} maxLength={100} required disabled={examBusy} placeholder="e.g. First Term Examination" />
+                  </label>
+                  <div className="form-grid">
+                    <label className="field">
+                      <span>Academic session</span>
+                      <input value={session} readOnly />
+                    </label>
+                    <label className="field">
+                      <span>Term</span>
+                      <input value={term} readOnly />
+                    </label>
+                  </div>
+                  <div className="form-grid">
+                    <label className="field">
+                      <span>Class *</span>
+                      <select value={examClassId} required disabled={examBusy || classes.length === 0} onChange={(event) => {
+                        const value = event.target.value ? Number(event.target.value) : "";
+                        setExamClassId(value);
+                        setExamSubjectId("");
+                        setExamClassSubjects([]);
+                        if (value !== "") {
+                          void loadExamClassSubjects(value).catch((error) => setExamError(String(error)));
+                        }
+                      }}>
+                        <option value="">Select a class</option>
+                        {classes.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                      </select>
+                    </label>
+                    <label className="field">
+                      <span>Subject *</span>
+                      <select value={examSubjectId} required disabled={examBusy || examClassSubjects.length === 0} onChange={(event) => setExamSubjectId(event.target.value ? Number(event.target.value) : "")}>
+                        <option value="">Select an assigned subject</option>
+                        {examClassSubjects.map((item) => <option key={item.subjectId} value={item.subjectId}>{item.subjectName}</option>)}
+                      </select>
+                    </label>
+                  </div>
+                  <label className="field">
+                    <span>Examination date (optional)</span>
+                    <input type="date" value={examDate} onChange={(event) => setExamDate(event.target.value)} disabled={examBusy} />
+                  </label>
+                  <button className="primary-button" type="submit" disabled={examBusy || classes.length === 0 || examClassSubjects.length === 0}>
+                    {examBusy ? "Saving..." : "Create examination"}
+                  </button>
+                  {classes.length === 0 && <p className="empty-state">Create a class before setting up an examination.</p>}
+                  {classes.length > 0 && examClassId !== "" && examClassSubjects.length === 0 && <p className="empty-state">Assign at least one subject to this class in Classes & Subjects first.</p>}
+                </form>
+              </section>
+
+              <section className="panel academic-panel">
+                <div className="section-heading">
+                  <div>
+                    <h2>Examinations</h2>
+                    <p>Saved examination records for this school installation.</p>
+                  </div>
+                  <span className="academic-count">{exams.length}</span>
+                </div>
+                {exams.length === 0 ? (
+                  <p className="empty-state">No examinations created yet.</p>
+                ) : (
+                  <div className="academic-list">
+                    {exams.map((exam) => (
+                      <div className="academic-list-item" key={exam.id}>
+                        <div>
+                          <strong>{exam.name}</strong>
+                          <p>{exam.session} · {exam.term} · {exam.className} · {exam.subjectName}</p>
+                          {exam.examDate && <p>Date: {exam.examDate}</p>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            </section>
+          )}
+
+          {page !== "Dashboard" && page !== "School Setup" && page !== "Classes & Subjects" && page !== "Students" && page !== "Marks Entry" && (
             <section className="inner-page">
               <div className="eyebrow">
                 {page === "Settings" ? "SYSTEM CONFIGURATION" : "EXAMINATION WORKSPACE"}

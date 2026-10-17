@@ -111,6 +111,13 @@ function App() {
   const [studentMessage, setStudentMessage] = useState("");
   const [studentBusy, setStudentBusy] = useState(false);
 
+  // Keep a class selected whenever classes are available.
+  useEffect(() => {
+    if (selectedClassId === null && classes.length > 0) {
+      setSelectedClassId(classes[0].id);
+    }
+  }, [classes, selectedClassId]);
+
   useEffect(() => {
     let active = true;
 
@@ -1161,8 +1168,33 @@ function App() {
                   </div>
                 </div>
 
+                <div className="assignment-form">
+                  <label className="field">
+                    <span>Class *</span>
+                    <select
+                      value={selectedClassId ?? ""}
+                      onChange={(event) => {
+                        const classId = event.target.value ? Number(event.target.value) : null;
+                        setSelectedClassId(classId);
+                        setClassSubjects([]);
+                        setAcademicError("");
+                        setAcademicMessage("");
+                        if (classId !== null) {
+                          void loadClassSubjects(classId).catch((error) => setAcademicError(String(error)));
+                        }
+                      }}
+                      disabled={academicBusy || classes.length === 0}
+                    >
+                      <option value="">Select a class</option>
+                      {classes.map((item) => (
+                        <option key={item.id} value={item.id}>{item.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+
                 {selectedClassId === null ? (
-                  <p className="empty-state">Create and select a class before assigning subjects.</p>
+                  <p className="empty-state">Create a class first, then select it above to assign subjects.</p>
                 ) : (
                   <>
                     <p className="selected-class-label">

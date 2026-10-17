@@ -1562,13 +1562,12 @@ function App() {
               </div>
               <h1>{page}</h1>
               <p className="page-subtitle">
-                                {page === "Marks Entry" && "Record student scores with their correct maximum marks."}
                 {page === "Results & Reports" && "Compile results and prepare printable report cards."}
                 {page === "Settings" && "Configure grading rules and application preferences."}
               </p>
               <div className="panel coming-panel">
                 <div className="coming-icon">
-                  {page === "Marks Entry" ? "✎" : page === "Results & Reports" ? "▤" : "⚙"}
+                  {page === "Results & Reports" ? "▤" : "⚙"}
                 </div>
                 <h2>{page} workspace</h2>
                 <p>This section will be implemented in the next stages.</p>

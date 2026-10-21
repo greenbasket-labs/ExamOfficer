@@ -32,6 +32,14 @@ type SchoolProfile = {
   term: string;
 };
 
+type GradeRemarkRule = {
+  minimumScore: number;
+  gradeLabel: string;
+  teacherRemark: string;
+  principalRemark: string;
+  sortOrder: number;
+};
+
 type SchoolSection = {
   id: number;
   name: string;
@@ -212,11 +220,13 @@ function App() {
   const [reportClassId, setReportClassId] = useState<number | "">("");
   const [reportStudentId, setReportStudentId] = useState<number | "">("");
   const [reportRows, setReportRows] = useState<ClassResultRow[]>([]);
-  const [reportTeacherRemark, setReportTeacherRemark] = useState("");
-  const [reportPrincipalRemark, setReportPrincipalRemark] = useState("");
   const [reportError, setReportError] = useState("");
   const [reportMessage, setReportMessage] = useState("");
   const [reportBusy, setReportBusy] = useState(false);
+  const [gradeRules, setGradeRules] = useState<GradeRemarkRule[]>([]);
+  const [gradeSettingsError, setGradeSettingsError] = useState("");
+  const [gradeSettingsMessage, setGradeSettingsMessage] = useState("");
+  const [gradeSettingsBusy, setGradeSettingsBusy] = useState(false);
 
   // Keep a class selected whenever classes are available.
   useEffect(() => {
@@ -708,40 +718,10 @@ function App() {
         term,
       });
       setReportRows(rows);
-      const remarks = await invoke<{ teacherRemark: string; principalRemark: string }>(
-        "get_report_card_remarks",
-        { studentId: reportStudentId, session: session.trim(), term },
-      );
-      setReportTeacherRemark(remarks.teacherRemark);
-      setReportPrincipalRemark(remarks.principalRemark);
       setReportMessage("Report card loaded from saved marks for the selected academic period.");
     } catch (error) {
       setReportError(String(error));
       setReportRows([]);
-    } finally {
-      setReportBusy(false);
-    }
-  };
-
-  const saveReportCardRemarks = async () => {
-    if (reportStudentId === "") {
-      setReportError("Select a student before saving remarks.");
-      return;
-    }
-    setReportBusy(true);
-    setReportError("");
-    setReportMessage("");
-    try {
-      await invoke("save_report_card_remarks", {
-        studentId: reportStudentId,
-        session: session.trim(),
-        term,
-        teacherRemark: reportTeacherRemark,
-        principalRemark: reportPrincipalRemark,
-      });
-      setReportMessage("Report-card remarks saved.");
-    } catch (error) {
-      setReportError(String(error));
     } finally {
       setReportBusy(false);
     }
@@ -783,6 +763,25 @@ function App() {
       setReportRows([]);
     }
   }, [reportClassId, reportStudents, reportStudentId]);
+
+  const loadGradeSettings = async () => {
+    setGradeSettingsError("");
+    setGradeSettingsMessage("");
+    try { setGradeRules(await invoke<GradeRemarkRule[]>("get_grade_remark_rules")); }
+    catch (error) { setGradeSettingsError(String(error)); }
+  };
+
+  const saveGradeSettings = async () => {
+    setGradeSettingsBusy(true); setGradeSettingsError(""); setGradeSettingsMessage("");
+    try {
+      const orderedRules = [...gradeRules].sort((a, b) => b.minimumScore - a.minimumScore);
+      await invoke("save_grade_remark_rules", { rules: orderedRules });
+      setGradeRules(orderedRules); setGradeSettingsMessage("Grading and automatic remark rules saved.");
+    } catch (error) { setGradeSettingsError(String(error)); }
+    finally { setGradeSettingsBusy(false); }
+  };
+
+  useEffect(() => { if (page === "Settings") void loadGradeSettings(); }, [page]);
 
   const loadClassResults = async () => {
     setResultError("");

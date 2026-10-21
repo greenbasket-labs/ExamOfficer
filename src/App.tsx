@@ -40,6 +40,12 @@ type GradeRemarkRule = {
   sortOrder: number;
 };
 
+type PositionRemarkRule = {
+  positionKey: string;
+  positionLabel: string;
+  remark: string;
+};
+
 type SchoolSection = {
   id: number;
   name: string;
@@ -227,6 +233,10 @@ function App() {
   const [gradeSettingsError, setGradeSettingsError] = useState("");
   const [gradeSettingsMessage, setGradeSettingsMessage] = useState("");
   const [gradeSettingsBusy, setGradeSettingsBusy] = useState(false);
+  const [positionRemarkRules, setPositionRemarkRules] = useState<PositionRemarkRule[]>([]);
+  const [positionSettingsError, setPositionSettingsError] = useState("");
+  const [positionSettingsMessage, setPositionSettingsMessage] = useState("");
+  const [positionSettingsBusy, setPositionSettingsBusy] = useState(false);
 
   // Keep a class selected whenever classes are available.
   useEffect(() => {
@@ -781,7 +791,36 @@ function App() {
     finally { setGradeSettingsBusy(false); }
   };
 
-  useEffect(() => { if (page === "Settings" || page === "Report Cards") void loadGradeSettings(); }, [page]);
+  const loadPositionRemarkSettings = async () => {
+    setPositionSettingsError("");
+    setPositionSettingsMessage("");
+    try {
+      setPositionRemarkRules(await invoke<PositionRemarkRule[]>("get_position_remark_rules"));
+    } catch (error) {
+      setPositionSettingsError(String(error));
+    }
+  };
+
+  const savePositionRemarkSettings = async () => {
+    setPositionSettingsBusy(true);
+    setPositionSettingsError("");
+    setPositionSettingsMessage("");
+    try {
+      await invoke("save_position_remark_rules", { rules: positionRemarkRules });
+      setPositionSettingsMessage("Position-based remarks saved.");
+    } catch (error) {
+      setPositionSettingsError(String(error));
+    } finally {
+      setPositionSettingsBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (page === "Settings" || page === "Report Cards") {
+      void loadGradeSettings();
+      void loadPositionRemarkSettings();
+    }
+  }, [page]);
 
   const loadClassResults = async () => {
     setResultError("");
@@ -1903,6 +1942,7 @@ function App() {
                       <div className="assignment-form" style={{ marginBottom: "18px" }}><div><strong>Grade</strong><p>{summary.average === null ? "—" : (gradeRules.find((rule) => summary.average! >= rule.minimumScore)?.gradeLabel ?? "—")}</p></div></div>
                       <div style={{ marginTop: "18px" }}><strong>Class teacher's remark</strong><p style={{ whiteSpace: "pre-wrap", minHeight: "36px" }}>{summary.average === null ? "No result available for remark generation." : (gradeRules.find((rule) => summary.average! >= rule.minimumScore)?.teacherRemark || "—")}</p></div>
                       <div style={{ marginTop: "18px" }}><strong>Principal's remark</strong><p style={{ whiteSpace: "pre-wrap", minHeight: "36px" }}>{summary.average === null ? "No result available for remark generation." : (gradeRules.find((rule) => summary.average! >= rule.minimumScore)?.principalRemark || "—")}</p></div>
+                      <div style={{ marginTop: "18px" }}><strong>Position remark</strong><p style={{ whiteSpace: "pre-wrap", minHeight: "36px" }}>{summary.average === null ? "No position remark available because this student has no recorded results." : (positionRemarkRules.find((rule) => rule.positionKey === (summary.position === 1 ? "first" : summary.position === 2 ? "second" : summary.position === 3 ? "third" : "other"))?.remark || "—")}</p></div>
                       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "28px", marginTop: "36px" }}><div style={{ borderTop: "1px solid #777", paddingTop: "8px" }}>Class teacher's signature</div><div style={{ borderTop: "1px solid #777", paddingTop: "8px" }}>Principal's signature</div></div>
                     </section>
                     <section className="panel academic-panel no-print"><div className="academic-item-actions"><button className="secondary-button" type="button" onClick={() => window.print()}>Print / Save as PDF</button></div><p className="page-subtitle">Grades and remarks are generated from the rules in Settings. Use the print dialog's “Save as PDF” option to create a PDF.</p></section>
@@ -1932,6 +1972,20 @@ function App() {
                 ))}
                 <div className="academic-item-actions"><button className="primary-button" type="button" onClick={() => void saveGradeSettings()} disabled={gradeSettingsBusy || gradeRules.length === 0}>{gradeSettingsBusy ? "Saving..." : "Save grading settings"}</button><button className="secondary-button" type="button" onClick={() => void loadGradeSettings()} disabled={gradeSettingsBusy}>Reload saved settings</button></div>
                 <p className="page-subtitle">These settings are stored in the local school database and used when report cards are generated.</p>
+              </section>
+              <section className="panel academic-panel">
+                <div className="section-heading"><div><h2>Position-based report remarks</h2><p>These remarks depend on the student's final position in the selected class, not the student's grade. Tied positions receive the same remark.</p></div></div>
+                {positionSettingsError && <div className="save-message error-message" role="alert">{positionSettingsError}</div>}
+                {positionSettingsMessage && <div className="save-message" role="status">{positionSettingsMessage}</div>}
+                {positionRemarkRules.map((rule, index) => (
+                  <div className="panel" key={rule.positionKey} style={{ marginBottom: "14px" }}>
+                    <label className="field"><span>{rule.positionLabel}</span><textarea rows={2} maxLength={500} value={rule.remark} onChange={(event) => setPositionRemarkRules((current) => current.map((item, i) => i === index ? { ...item, remark: event.target.value } : item))} disabled={positionSettingsBusy} /></label>
+                  </div>
+                ))}
+                <div className="academic-item-actions">
+                  <button className="primary-button" type="button" onClick={() => void savePositionRemarkSettings()} disabled={positionSettingsBusy || positionRemarkRules.length !== 4}>{positionSettingsBusy ? "Saving..." : "Save position remarks"}</button>
+                  <button className="secondary-button" type="button" onClick={() => void loadPositionRemarkSettings()} disabled={positionSettingsBusy}>Reload position remarks</button>
+                </div>
               </section>
             </section>
           )}

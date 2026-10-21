@@ -1,4 +1,4 @@
-﻿use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use tauri::Manager;
@@ -292,6 +292,126 @@ fn database_connection(app: &tauri::AppHandle) -> Result<Connection, String> {
         [],
     ).map_err(|e| format!("Cannot assign existing primary classes: {e}"))?;
     Ok(connection)
+}
+
+fn encode_base64(input: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let a = chunk[0];
+        let b = *chunk.get(1).unwrap_or(&0);
+        let c = *chunk.get(2).unwrap_or(&0);
+        output.push(TABLE[(a >> 2) as usize] as char);
+        output.push(TABLE[(((a & 0x03) << 4) | (b >> 4)) as usize] as char);
+        output.push(if chunk.len() > 1 { TABLE[(((b & 0x0f) << 2) | (c >> 6)) as usize] as char } else { '=' });
+        output.push(if chunk.len() > 2 { TABLE[(c & 0x3f) as usize] as char } else { '=' });
+    }
+    output
+}
+
+fn app_database_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let directory = app.path().app_data_dir()
+        .map_err(|e| format!("Cannot locate application data folder: {e}"))?;
+    std::fs::create_dir_all(&directory)
+        .map_err(|e| format!("Cannot create application data folder: {e}"))?;
+    Ok(directory.join("examofficer.sqlite"))
+}
+
+#[tauri::command]
+fn create_database_backup(app: tauri::AppHandle) -> Result<String, String> {
+    let database_path = app_database_path(&app)?;
+    let connection = database_connection(&app)?;
+    connection.execute_batch("PRAGMA wal_checkpoint(FULL);")
+        .map_err(|e| format!("Cannot prepare database for backup: {e}"))?;
+    drop(connection);
+    let bytes = std::fs::read(&database_path)
+        .map_err(|e| format!("Cannot read the school database for backup: {e}"))?;
+    if bytes.len() < 16 || !bytes.starts_with(b"SQLite format 3\\0") {
+        return Err("The current school database is not a valid SQLite database.".to_string());
+    }
+    Ok(encode_base64(&bytes))
+}
+
+#[tauri::command]
+fn restore_database_backup(app: tauri::AppHandle, backup_base64: String) -> Result<String, String> {
+    if backup_base64.len() > 256 * 1024 * 1024 {
+        return Err("This backup is too large to restore safely (maximum encoded size: 256 MB).".to_string());
+    }
+    let bytes = decode_base64(&backup_base64)?;
+    if bytes.len() < 16 || !bytes.starts_with(b"SQLite format 3\\0") {
+        return Err("This file is not a valid ExamOfficer SQLite backup.".to_string());
+    }
+
+    let database_path = app_database_path(&app)?;
+    let directory = database_path.parent().ok_or_else(|| "Cannot locate database folder.".to_string())?;
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| format!("Cannot create backup timestamp: {e}"))?.as_secs();
+    let temporary_path = directory.join(format!("examofficer-restore-{stamp}.tmp.sqlite"));
+    let safety_path = directory.join(format!("examofficer-before-restore-{stamp}.sqlite"));
+
+    std::fs::write(&temporary_path, &bytes)
+        .map_err(|e| format!("Cannot stage the selected backup: {e}"))?;
+
+    let validation = (|| -> Result<(), String> {
+        let candidate = Connection::open(&temporary_path)
+            .map_err(|e| format!("Cannot open selected backup: {e}"))?;
+        let integrity: String = candidate.query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .map_err(|e| format!("Cannot verify backup integrity: {e}"))?;
+        if integrity != "ok" {
+            return Err(format!("Backup integrity check failed: {integrity}"));
+        }
+        for table in ["school_profile", "school_classes", "subjects", "students", "mark_entries", "grade_remark_rules", "position_remark_rules"] {
+            let exists: bool = candidate.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                [table], |row| row.get(0)
+            ).map_err(|e| format!("Cannot validate backup schema: {e}"))?;
+            if !exists {
+                return Err(format!("This backup is missing a required ExamOfficer table: {table}. The current database was not changed."));
+            }
+        }
+        let mut foreign_keys = candidate.prepare("PRAGMA foreign_key_check")
+            .map_err(|e| format!("Cannot check backup relationships: {e}"))?;
+        let mut rows = foreign_keys.query([])
+            .map_err(|e| format!("Cannot check backup relationships: {e}"))?;
+        if rows.next().map_err(|e| format!("Cannot check backup relationships: {e}"))?.is_some() {
+            return Err("This backup contains broken data relationships. The current database was not changed.".to_string());
+        }
+        drop(rows);
+        drop(foreign_keys);
+        drop(candidate);
+        Ok(())
+    })();
+    if let Err(error) = validation {
+        let _ = std::fs::remove_file(&temporary_path);
+        return Err(error);
+    }
+
+    // Close/checkpoint all command-local handles before replacing the database file.
+    let current = database_connection(&app)?;
+    current.execute_batch("PRAGMA wal_checkpoint(FULL);")
+        .map_err(|e| format!("Cannot prepare current database for restore: {e}"))?;
+    drop(current);
+    std::fs::copy(&database_path, &safety_path)
+        .map_err(|e| format!("Cannot create a safety copy of the current database; restore cancelled: {e}"))?;
+
+    let staged_current = directory.join(format!("examofficer-current-{stamp}.staged.sqlite"));
+    if database_path.exists() {
+        if let Err(error) = std::fs::rename(&database_path, &staged_current) {
+            let _ = std::fs::remove_file(&temporary_path);
+            return Err(format!("Cannot safely stage the current database; restore cancelled: {error}"));
+        }
+    }
+    if let Err(error) = std::fs::rename(&temporary_path, &database_path) {
+        if staged_current.exists() {
+            let _ = std::fs::rename(&staged_current, &database_path);
+        }
+        let _ = std::fs::remove_file(&temporary_path);
+        return Err(format!("Could not install the restored database. The previous database was preserved: {error}"));
+    }
+    let _ = std::fs::remove_file(directory.join("examofficer.sqlite-wal"));
+    let _ = std::fs::remove_file(directory.join("examofficer.sqlite-shm"));
+    let _ = std::fs::remove_file(staged_current);
+    Ok(format!("Backup restored successfully. A safety copy of the database that was replaced is stored at: {}. Restart ExamOfficer to reload all screens.", safety_path.display()))
 }
 
 fn clean_name(value: String, field: &str) -> Result<String, String> {
@@ -1439,6 +1559,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             greet,
+            create_database_backup,
+            restore_database_backup,
             get_school_profile,
             save_school_profile,
             get_school_sections,

@@ -143,6 +143,18 @@ fn database_connection(app: &tauri::AppHandle) -> Result<Connection, String> {
                 (50, 'D', 'Fair performance. More effort is needed.', 'Encourage more consistent study and practice.', 4),
                 (0, 'F', 'Needs considerable improvement and support.', 'Please work with the student to improve performance.', 5);
 
+             CREATE TABLE IF NOT EXISTS position_remark_rules (
+                position_key TEXT PRIMARY KEY,
+                position_label TEXT NOT NULL,
+                remark TEXT NOT NULL DEFAULT ''
+             );
+
+             INSERT OR IGNORE INTO position_remark_rules (position_key, position_label, remark) VALUES
+                ('first', '1st position', 'Congratulations! You are the top-performing student in your class. Keep up the excellent work.'),
+                ('second', '2nd position', 'Excellent performance! You have achieved second position in your class. Keep striving for the top.'),
+                ('third', '3rd position', 'Very good performance! You have secured third position in your class. Continue working hard.'),
+                ('other', '4th position and below', 'Keep working hard and remain focused on improving your performance.');
+
              CREATE TABLE IF NOT EXISTS report_card_remarks (
                 student_id INTEGER NOT NULL,
                 session TEXT NOT NULL,
@@ -1051,6 +1063,60 @@ fn save_grade_remark_rules(app: tauri::AppHandle, rules: Vec<GradeRemarkRule>) -
     Ok(())
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PositionRemarkRule {
+    position_key: String,
+    position_label: String,
+    remark: String,
+}
+
+#[tauri::command]
+fn get_position_remark_rules(app: tauri::AppHandle) -> Result<Vec<PositionRemarkRule>, String> {
+    let connection = database_connection(&app)?;
+    let mut statement = connection.prepare(
+        "SELECT position_key, position_label, remark FROM position_remark_rules
+         ORDER BY CASE position_key WHEN 'first' THEN 1 WHEN 'second' THEN 2 WHEN 'third' THEN 3 ELSE 4 END"
+    ).map_err(|e| format!("Cannot prepare position remark settings query: {e}"))?;
+    let rows = statement.query_map([], |row| Ok(PositionRemarkRule {
+        position_key: row.get(0)?,
+        position_label: row.get(1)?,
+        remark: row.get(2)?,
+    })).map_err(|e| format!("Cannot read position remark settings: {e}"))?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("Cannot read position remark settings: {e}"))
+}
+
+#[tauri::command]
+fn save_position_remark_rules(app: tauri::AppHandle, rules: Vec<PositionRemarkRule>) -> Result<(), String> {
+    if rules.len() != 4 {
+        return Err("Provide remarks for 1st, 2nd, 3rd, and 4th position and below.".to_string());
+    }
+    let required = ["first", "second", "third", "other"];
+    for key in required {
+        if rules.iter().filter(|rule| rule.position_key == key).count() != 1 {
+            return Err("Each position category must appear exactly once.".to_string());
+        }
+    }
+    for rule in &rules {
+        if rule.position_label.trim().is_empty() || rule.position_label.chars().count() > 80 {
+            return Err("Position labels must contain 1 to 80 characters.".to_string());
+        }
+        if rule.remark.chars().count() > 500 {
+            return Err("Each position remark must be 500 characters or fewer.".to_string());
+        }
+    }
+    let mut connection = database_connection(&app)?;
+    let transaction = connection.transaction().map_err(|e| format!("Cannot start position remark update: {e}"))?;
+    for rule in &rules {
+        transaction.execute(
+            "UPDATE position_remark_rules SET position_label = ?1, remark = ?2 WHERE position_key = ?3",
+            params![rule.position_label.trim(), rule.remark.trim(), rule.position_key],
+        ).map_err(|e| format!("Cannot save position remark: {e}"))?;
+    }
+    transaction.commit().map_err(|e| format!("Cannot finish position remark update: {e}"))?;
+    Ok(())
+}
+
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
@@ -1083,6 +1149,8 @@ pub fn run() {
             get_class_results,
             get_grade_remark_rules,
             save_grade_remark_rules,
+            get_position_remark_rules,
+            save_position_remark_rules,
             get_report_card_remarks,
             save_report_card_remarks,
             get_students,

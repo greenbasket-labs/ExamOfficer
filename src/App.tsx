@@ -1,4 +1,4 @@
-﻿import { useEffect, useState } from "react";
+﻿import { Fragment, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
@@ -1720,11 +1720,11 @@ function App() {
                           {student.subjects.length > 0 && (
                             <div style={{ display: "grid", gridTemplateColumns: "minmax(110px, 1fr) auto auto", gap: "6px 14px", marginTop: "10px", fontSize: "0.9rem" }}>
                               {student.subjects.map((subject) => (
-                                <React.Fragment key={subject.subjectId}>
+                                <Fragment key={subject.subjectId}>
                                   <span>{subject.subjectName}</span>
                                   <span>{subject.assessmentCount > 0 ? `${Number(subject.scoreTotal.toFixed(2))}/${Number(subject.maxTotal.toFixed(2))}` : "—"}</span>
                                   <span>{subject.assessmentCount > 0 && subject.maxTotal > 0 ? `${((subject.scoreTotal / subject.maxTotal) * 100).toFixed(1)}%` : "—"}</span>
-                                </React.Fragment>
+                                </Fragment>
                               ))}
                             </div>
                           )}

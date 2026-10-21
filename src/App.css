@@ -1543,21 +1543,35 @@ h1 {
   font-weight: 800;
   overflow-wrap: anywhere;
 }
-.report-card-paper > div:nth-child(5),
+.report-card-paper > div:nth-child(5) {
+  margin-top: 12px !important;
+  padding: 10px 14px;
+  border: 1px solid #d8e4f2;
+  border-radius: 8px;
+  background: #f4f8fd;
+}
+.report-card-paper > div:nth-child(5) p {
+  margin: 6px 0 0;
+  color: var(--report-navy);
+  font-family: "Manrope", sans-serif;
+  font-size: 18px;
+  font-weight: 800;
+}
 .report-card-paper > div:nth-child(6),
-.report-card-paper > div:nth-child(7) {
+.report-card-paper > div:nth-child(7),
+.report-card-paper > div:nth-child(8) {
   margin-top: 12px !important;
   padding: 12px 14px;
   border: 1px solid #dce5ef;
   border-radius: 8px;
   background: #fff;
 }
-.report-card-paper > div:nth-child(5) { border-left: 4px solid #5484c7; }
-.report-card-paper > div:nth-child(6) { border-left: 4px solid var(--report-gold); }
-.report-card-paper > div:nth-child(7) { border-left: 4px solid #55a47c; }
-.report-card-paper > div:nth-child(5) p,
+.report-card-paper > div:nth-child(6) { border-left: 4px solid #5484c7; }
+.report-card-paper > div:nth-child(7) { border-left: 4px solid var(--report-gold); }
+.report-card-paper > div:nth-child(8) { border-left: 4px solid #55a47c; }
 .report-card-paper > div:nth-child(6) p,
-.report-card-paper > div:nth-child(7) p {
+.report-card-paper > div:nth-child(7) p,
+.report-card-paper > div:nth-child(8) p {
   margin: 6px 0 0;
   color: #344054;
   font-size: 12px;
@@ -1599,6 +1613,7 @@ h1 {
   .report-card-paper > div:nth-child(4) p { font-size: 16px; }
   .report-card-paper > div:nth-child(5),
   .report-card-paper > div:nth-child(6),
-  .report-card-paper > div:nth-child(7) { padding: 8px 10px; }
+  .report-card-paper > div:nth-child(7),
+  .report-card-paper > div:nth-child(8) { padding: 8px 10px; }
 }
 \n

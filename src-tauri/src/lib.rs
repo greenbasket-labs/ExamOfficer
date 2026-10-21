@@ -127,6 +127,17 @@ fn database_connection(app: &tauri::AppHandle) -> Result<Connection, String> {
                 FOREIGN KEY(subject_id) REFERENCES subjects(id) ON DELETE RESTRICT
              );
 
+             CREATE TABLE IF NOT EXISTS report_card_remarks (
+                student_id INTEGER NOT NULL,
+                session TEXT NOT NULL,
+                term TEXT NOT NULL,
+                teacher_remark TEXT NOT NULL DEFAULT '',
+                principal_remark TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(student_id, session, term),
+                FOREIGN KEY(student_id) REFERENCES students(id) ON DELETE CASCADE
+             );
+
              CREATE INDEX IF NOT EXISTS idx_students_class
                 ON students(class_id);",
         )
@@ -891,6 +902,74 @@ fn save_mark_entry(
     Ok(())
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReportCardRemarks {
+    teacher_remark: String,
+    principal_remark: String,
+}
+
+#[tauri::command]
+fn get_report_card_remarks(
+    app: tauri::AppHandle,
+    student_id: i64,
+    session: String,
+    term: String,
+) -> Result<ReportCardRemarks, String> {
+    let connection = database_connection(&app)?;
+    connection.query_row(
+        "SELECT teacher_remark, principal_remark
+         FROM report_card_remarks
+         WHERE student_id = ?1 AND session = ?2 AND term = ?3",
+        params![student_id, session.trim(), term.trim()],
+        |row| Ok(ReportCardRemarks {
+            teacher_remark: row.get(0)?,
+            principal_remark: row.get(1)?,
+        }),
+    ).optional()
+     .map_err(|e| format!("Cannot load report-card remarks: {e}"))
+     .map(|remarks| remarks.unwrap_or(ReportCardRemarks {
+         teacher_remark: String::new(),
+         principal_remark: String::new(),
+     }))
+}
+
+#[tauri::command]
+fn save_report_card_remarks(
+    app: tauri::AppHandle,
+    student_id: i64,
+    session: String,
+    term: String,
+    teacher_remark: String,
+    principal_remark: String,
+) -> Result<(), String> {
+    let session = clean_name(session, "Academic session")?;
+    let term = clean_name(term, "Term")?;
+    if teacher_remark.chars().count() > 500 || principal_remark.chars().count() > 500 {
+        return Err("Each report-card remark must be 500 characters or fewer.".to_string());
+    }
+    let connection = database_connection(&app)?;
+    let student_exists: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM students WHERE id = ?1)",
+        params![student_id],
+        |row| row.get(0),
+    ).map_err(|e| format!("Cannot validate student: {e}"))?;
+    if !student_exists {
+        return Err("Student record not found.".to_string());
+    }
+    connection.execute(
+        "INSERT INTO report_card_remarks
+            (student_id, session, term, teacher_remark, principal_remark, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP)
+         ON CONFLICT(student_id, session, term)
+         DO UPDATE SET teacher_remark = excluded.teacher_remark,
+                       principal_remark = excluded.principal_remark,
+                       updated_at = CURRENT_TIMESTAMP",
+        params![student_id, session, term, teacher_remark.trim(), principal_remark.trim()],
+    ).map_err(|e| format!("Cannot save report-card remarks: {e}"))?;
+    Ok(())
+}
+
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
@@ -921,6 +1000,8 @@ pub fn run() {
             get_mark_entries,
             save_mark_entry,
             get_class_results,
+            get_report_card_remarks,
+            save_report_card_remarks,
             get_students,
             create_student,
             delete_student

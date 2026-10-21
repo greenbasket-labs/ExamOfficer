@@ -135,6 +135,7 @@ function parseCsv(text: string): string[][] {
 
 
 function parseStudentPdfText(text: string, configuredClasses: SchoolClass[]): string[][] {
+  const normalizeClassName = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, "");
   const classNames = configuredClasses.map((item) => item.name.trim()).filter(Boolean).sort((a, b) => b.length - a.length);
   const lines = text.split(/\r?\n/).map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean);
   const rows: string[][] = [];
@@ -143,12 +144,18 @@ function parseStudentPdfText(text: string, configuredClasses: SchoolClass[]): st
     const genderMatch = /\b(Female|Male)\b/i.exec(line);
     const sectionMatch = /\b(Junior Secondary|Senior Secondary|Nursery|Primary)\b/i.exec(line);
     if (!genderMatch || !sectionMatch) continue;
-    const className = classNames.find((name) => line.toLowerCase().includes(name.toLowerCase()));
+    // PDF text extraction can remove spaces from labels such as "SS 1" -> "SS1".
+    // Compare normalized labels while preferring the longest configured class name.
+    const normalizedLine = normalizeClassName(line);
+    const className = classNames.find((name) => normalizedLine.includes(normalizeClassName(name)));
     if (!className) continue;
     const genderIndex = genderMatch.index;
     let name = line.slice(0, genderIndex).replace(/^\d+\s+/, "").trim();
     name = name.replace(/[|•·]+$/g, "").trim();
     if (!name || name.length > 120) continue;
+    // Remove common table separators and a leading row number if extraction inserted one.
+    name = name.replace(/^[#.)\s-]*\d+[.)\s-]+/, "").replace(/[|•·]+$/g, "").trim();
+    if (!name) continue;
     const section = sectionMatch[0];
     const dateMatch = /\b\d{4}-\d{2}-\d{2}\b/.exec(line);
     const phoneMatch = /\b0\d{10}\b/.exec(line);

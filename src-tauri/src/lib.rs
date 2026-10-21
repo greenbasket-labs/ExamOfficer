@@ -112,6 +112,21 @@ fn database_connection(app: &tauri::AppHandle) -> Result<Connection, String> {
                     ON DELETE RESTRICT
              );
 
+             CREATE TABLE IF NOT EXISTS mark_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                student_id INTEGER NOT NULL,
+                subject_id INTEGER NOT NULL,
+                session TEXT NOT NULL,
+                term TEXT NOT NULL,
+                assessment_name TEXT NOT NULL,
+                score REAL NOT NULL CHECK (score >= 0),
+                max_score REAL NOT NULL CHECK (max_score > 0 AND score <= max_score),
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(student_id, subject_id, session, term, assessment_name),
+                FOREIGN KEY(student_id) REFERENCES students(id) ON DELETE CASCADE,
+                FOREIGN KEY(subject_id) REFERENCES subjects(id) ON DELETE RESTRICT
+             );
+
              CREATE INDEX IF NOT EXISTS idx_students_class
                 ON students(class_id);",
         )
@@ -711,6 +726,92 @@ fn delete_student(app: tauri::AppHandle, id: i64) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MarkEntryRow {
+    student_id: i64,
+    student_code: String,
+    student_name: String,
+    score: Option<f64>,
+    max_score: Option<f64>,
+}
+
+#[tauri::command]
+fn get_mark_entries(
+    app: tauri::AppHandle,
+    class_id: i64,
+    subject_id: i64,
+    session: String,
+    term: String,
+    assessment_name: String,
+) -> Result<Vec<MarkEntryRow>, String> {
+    let connection = database_connection(&app)?;
+    let mut statement = connection.prepare(
+        "SELECT s.id, s.student_id,
+                trim(s.first_name || ' ' || s.middle_name || ' ' || s.last_name),
+                m.score, m.max_score
+         FROM students s
+         LEFT JOIN mark_entries m
+           ON m.student_id = s.id
+          AND m.subject_id = ?2
+          AND m.session = ?3
+          AND m.term = ?4
+          AND m.assessment_name = ?5
+         WHERE s.class_id = ?1
+         ORDER BY s.last_name COLLATE NOCASE, s.first_name COLLATE NOCASE, s.student_id"
+    ).map_err(|e| format!("Cannot prepare marks query: {e}"))?;
+    let rows = statement.query_map(
+        params![class_id, subject_id, session.trim(), term.trim(), assessment_name.trim()],
+        |row| Ok(MarkEntryRow {
+            student_id: row.get(0)?,
+            student_code: row.get(1)?,
+            student_name: row.get(2)?,
+            score: row.get(3)?,
+            max_score: row.get(4)?,
+        }),
+    ).map_err(|e| format!("Cannot query marks: {e}"))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Cannot read marks: {e}"))
+}
+
+#[tauri::command]
+fn save_mark_entry(
+    app: tauri::AppHandle,
+    student_id: i64,
+    subject_id: i64,
+    session: String,
+    term: String,
+    assessment_name: String,
+    score: f64,
+    max_score: f64,
+) -> Result<(), String> {
+    let session = clean_name(session, "Academic session")?;
+    let term = clean_name(term, "Term")?;
+    let assessment_name = clean_name(assessment_name, "Assessment name")?;
+    if !score.is_finite() || !max_score.is_finite() || max_score <= 0.0 || score < 0.0 || score > max_score {
+        return Err("Score must be between zero and the maximum score, and the maximum must be greater than zero.".to_string());
+    }
+    let connection = database_connection(&app)?;
+    let valid_student: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM students WHERE id = ?1)", params![student_id], |row| row.get(0)
+    ).map_err(|e| format!("Cannot validate student: {e}"))?;
+    if !valid_student { return Err("Student record not found.".to_string()); }
+    let valid_subject: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM subjects WHERE id = ?1)", params![subject_id], |row| row.get(0)
+    ).map_err(|e| format!("Cannot validate subject: {e}"))?;
+    if !valid_subject { return Err("Subject not found.".to_string()); }
+    connection.execute(
+        "INSERT INTO mark_entries
+            (student_id, subject_id, session, term, assessment_name, score, max_score, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP)
+         ON CONFLICT(student_id, subject_id, session, term, assessment_name)
+         DO UPDATE SET score = excluded.score, max_score = excluded.max_score,
+                       updated_at = CURRENT_TIMESTAMP",
+        params![student_id, subject_id, session, term, assessment_name, score, max_score],
+    ).map_err(|e| format!("Cannot save mark: {e}"))?;
+    Ok(())
+}
+
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
@@ -738,6 +839,8 @@ pub fn run() {
             get_class_subjects,
             assign_subject_to_class,
             remove_class_subject,
+            get_mark_entries,
+            save_mark_entry,
             get_students,
             create_student,
             delete_student

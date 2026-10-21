@@ -78,6 +78,78 @@ type MarkEntryRow = {
   maxScore: number | null;
 };
 
+type ClassResultRow = {
+  studentId: number;
+  studentCode: string;
+  studentName: string;
+  subjectId: number | null;
+  subjectName: string | null;
+  scoreTotal: number;
+  maxTotal: number;
+  assessmentCount: number;
+};
+
+type StudentResultSummary = {
+  studentId: number;
+  studentCode: string;
+  studentName: string;
+  subjects: { subjectId: number; subjectName: string; scoreTotal: number; maxTotal: number; assessmentCount: number }[];
+  average: number | null;
+  position: number;
+};
+
+function summarizeClassResults(rows: ClassResultRow[]): StudentResultSummary[] {
+  const grouped = new Map<number, Omit<StudentResultSummary, "average" | "position">>();
+  for (const row of rows) {
+    let student = grouped.get(row.studentId);
+    if (!student) {
+      student = {
+        studentId: row.studentId,
+        studentCode: row.studentCode,
+        studentName: row.studentName,
+        subjects: [],
+      };
+      grouped.set(row.studentId, student);
+    }
+    if (row.subjectId !== null && row.subjectName !== null) {
+      student.subjects.push({
+        subjectId: row.subjectId,
+        subjectName: row.subjectName,
+        scoreTotal: row.scoreTotal,
+        maxTotal: row.maxTotal,
+        assessmentCount: row.assessmentCount,
+      });
+    }
+  }
+
+  const summaries = Array.from(grouped.values()).map((student) => {
+    const percentages = student.subjects
+      .filter((subject) => subject.assessmentCount > 0 && subject.maxTotal > 0)
+      .map((subject) => (subject.scoreTotal / subject.maxTotal) * 100);
+    const average = percentages.length
+      ? Math.round((percentages.reduce((sum, value) => sum + value, 0) / percentages.length) * 100) / 100
+      : null;
+    return { ...student, average, position: 0 };
+  });
+
+  summaries.sort((a, b) => {
+    if (a.average === null && b.average !== null) return 1;
+    if (a.average !== null && b.average === null) return -1;
+    if (a.average !== null && b.average !== null && a.average !== b.average) return b.average - a.average;
+    return a.studentName.localeCompare(b.studentName);
+  });
+
+  let lastAverage: number | null | undefined = undefined;
+  let lastPosition = 0;
+  summaries.forEach((student, index) => {
+    if (index === 0 || student.average !== lastAverage) {
+      lastPosition = index + 1;
+      lastAverage = student.average;
+    }
+    student.position = lastPosition;
+  });
+  return summaries;
+}
 
 function App() {
   const [page, setPage] = useState<Page>("Dashboard");
@@ -129,6 +201,11 @@ function App() {
   const [markError, setMarkError] = useState("");
   const [markMessage, setMarkMessage] = useState("");
   const [markBusy, setMarkBusy] = useState(false);
+  const [resultClassId, setResultClassId] = useState<number | "">("");
+  const [resultRows, setResultRows] = useState<ClassResultRow[]>([]);
+  const [resultError, setResultError] = useState("");
+  const [resultMessage, setResultMessage] = useState("");
+  const [resultBusy, setResultBusy] = useState(false);
 
   // Keep a class selected whenever classes are available.
   useEffect(() => {
@@ -604,6 +681,58 @@ function App() {
       setMarkBusy(false);
     }
   };
+
+  const loadClassResults = async () => {
+    setResultError("");
+    setResultMessage("");
+    if (resultClassId === "") {
+      setResultError("Select a class before generating results.");
+      return;
+    }
+    setResultBusy(true);
+    try {
+      const rows = await invoke<ClassResultRow[]>("get_class_results", {
+        classId: resultClassId,
+        session: session.trim(),
+        term,
+      });
+      setResultRows(rows);
+      if (rows.length === 0) {
+        setResultMessage("No students are registered in this class yet.");
+      } else if (!rows.some((row) => row.assessmentCount > 0)) {
+        setResultMessage("Students are listed, but no marks have been saved for this period yet.");
+      } else {
+        setResultMessage("Results calculated from saved marks for the selected academic period.");
+      }
+    } catch (error) {
+      setResultError(String(error));
+      setResultRows([]);
+    } finally {
+      setResultBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (page !== "Results & Reports") return;
+    let active = true;
+    async function loadResultSetup() {
+      setResultError("");
+      try {
+        const loadedClasses = await invoke<SchoolClass[]>("get_classes");
+        if (!active) return;
+        setClasses(loadedClasses);
+        setResultClassId((current) =>
+          current !== "" && loadedClasses.some((item) => item.id === current)
+            ? current
+            : loadedClasses[0]?.id ?? ""
+        );
+      } catch (error) {
+        if (active) setResultError(String(error));
+      }
+    }
+    void loadResultSetup();
+    return () => { active = false; };
+  }, [page]);
 
   useEffect(() => {
     if (page !== "Marks Entry" || markClassId === "") {
@@ -1559,9 +1688,54 @@ function App() {
           )}
           {page === "Results & Reports" && (
             <section className="inner-page">
-              <div className="eyebrow">EXAMINATION WORKSPACE</div><h1>Results & Reports</h1>
-              <p className="page-subtitle">Result calculations, rankings, report cards and printable exports are planned next. This screen does not yet generate final results.</p>
-              <div className="panel coming-panel"><div className="coming-icon">▤</div><h2>Results & Reports</h2><p>Marks entry foundation is in progress. Report calculations, rankings and report-card exports are not yet implemented.</p></div>
+              <div className="eyebrow">EXAMINATION WORKSPACE</div>
+              <h1>Results & Reports</h1>
+              <p className="page-subtitle">Calculate class results from saved marks for the selected academic session and term.</p>
+              {resultError && <div className="save-message error-message" role="alert">{resultError}</div>}
+              {resultMessage && <div className="save-message" role="status">{resultMessage}</div>}
+              <section className="panel academic-panel">
+                <div className="section-heading"><div><h2>Class results</h2><p>Choose a class to calculate subject totals, averages and positions.</p></div></div>
+                <div className="assignment-form">
+                  <label className="field"><span>Class *</span>
+                    <select value={resultClassId} onChange={(event) => { setResultClassId(event.target.value ? Number(event.target.value) : ""); setResultRows([]); setResultMessage(""); }} disabled={resultBusy}>
+                      <option value="">Select class</option>{classes.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                    </select>
+                  </label>
+                  <div className="field"><span>Academic session</span><strong>{session}</strong></div>
+                  <div className="field"><span>Term</span><strong>{term}</strong></div>
+                </div>
+                <button className="primary-button" type="button" onClick={() => void loadClassResults()} disabled={resultBusy || resultClassId === ""}>
+                  {resultBusy ? "Calculating..." : "Generate class results"}
+                </button>
+              </section>
+              {resultRows.length > 0 && (
+                <section className="panel academic-panel">
+                  <div className="section-heading"><div><h2>Class ranking</h2><p>Average is calculated from each student's subjects that have saved marks. Each subject has equal weight.</p></div><span className="academic-count">{summarizeClassResults(resultRows).length} students</span></div>
+                  <div className="academic-list">
+                    {summarizeClassResults(resultRows).map((student) => (
+                      <div className="academic-list-item" key={student.studentId} style={{ alignItems: "flex-start" }}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <strong>{student.position}. {student.studentName}</strong>
+                          <p>{student.studentCode} · {student.average === null ? "No marks recorded" : `Average: ${student.average.toFixed(2)}%`}</p>
+                          {student.subjects.length > 0 && (
+                            <div style={{ display: "grid", gridTemplateColumns: "minmax(110px, 1fr) auto auto", gap: "6px 14px", marginTop: "10px", fontSize: "0.9rem" }}>
+                              {student.subjects.map((subject) => (
+                                <React.Fragment key={subject.subjectId}>
+                                  <span>{subject.subjectName}</span>
+                                  <span>{subject.assessmentCount > 0 ? `${Number(subject.scoreTotal.toFixed(2))}/${Number(subject.maxTotal.toFixed(2))}` : "—"}</span>
+                                  <span>{subject.assessmentCount > 0 && subject.maxTotal > 0 ? `${((subject.scoreTotal / subject.maxTotal) * 100).toFixed(1)}%` : "—"}</span>
+                                </React.Fragment>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                        <div className="academic-item-actions"><span className="academic-count">Position {student.position}</span></div>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="page-subtitle">Tied averages share the same competition rank (for example, 1, 2, 2, 4). Students without marks appear after students with results. Grades, teacher/principal remarks, printable report cards and PDF export are not yet implemented.</p>
+                </section>
+              )}
             </section>
           )}
           {page === "Settings" && (

@@ -9,6 +9,7 @@ type Page =
   | "Classes & Subjects"
   | "Marks Entry"
   | "Results & Reports"
+  | "Report Cards"
   | "Settings";
 
 const navigation: { label: Page; icon: string; group: string }[] = [
@@ -18,6 +19,7 @@ const navigation: { label: Page; icon: string; group: string }[] = [
   { label: "Classes & Subjects", icon: "â–¤", group: "SCHOOL MANAGEMENT" },
   { label: "Marks Entry", icon: "âœŽ", group: "EXAMINATIONS" },
   { label: "Results & Reports", icon: "â–¥", group: "EXAMINATIONS" },
+  { label: "Report Cards", icon: "▤", group: "EXAMINATIONS" },
   { label: "Settings", icon: "âš™", group: "SYSTEM" },
 ];
 
@@ -206,6 +208,15 @@ function App() {
   const [resultError, setResultError] = useState("");
   const [resultMessage, setResultMessage] = useState("");
   const [resultBusy, setResultBusy] = useState(false);
+  const [reportStudents, setReportStudents] = useState<Student[]>([]);
+  const [reportClassId, setReportClassId] = useState<number | "">("");
+  const [reportStudentId, setReportStudentId] = useState<number | "">("");
+  const [reportRows, setReportRows] = useState<ClassResultRow[]>([]);
+  const [reportTeacherRemark, setReportTeacherRemark] = useState("");
+  const [reportPrincipalRemark, setReportPrincipalRemark] = useState("");
+  const [reportError, setReportError] = useState("");
+  const [reportMessage, setReportMessage] = useState("");
+  const [reportBusy, setReportBusy] = useState(false);
 
   // Keep a class selected whenever classes are available.
   useEffect(() => {
@@ -681,6 +692,97 @@ function App() {
       setMarkBusy(false);
     }
   };
+
+  const loadReportCard = async () => {
+    setReportError("");
+    setReportMessage("");
+    if (reportClassId === "" || reportStudentId === "") {
+      setReportError("Select a class and a student first.");
+      return;
+    }
+    setReportBusy(true);
+    try {
+      const rows = await invoke<ClassResultRow[]>("get_class_results", {
+        classId: reportClassId,
+        session: session.trim(),
+        term,
+      });
+      setReportRows(rows);
+      const remarks = await invoke<{ teacherRemark: string; principalRemark: string }>(
+        "get_report_card_remarks",
+        { studentId: reportStudentId, session: session.trim(), term },
+      );
+      setReportTeacherRemark(remarks.teacherRemark);
+      setReportPrincipalRemark(remarks.principalRemark);
+      setReportMessage("Report card loaded from saved marks for the selected academic period.");
+    } catch (error) {
+      setReportError(String(error));
+      setReportRows([]);
+    } finally {
+      setReportBusy(false);
+    }
+  };
+
+  const saveReportCardRemarks = async () => {
+    if (reportStudentId === "") {
+      setReportError("Select a student before saving remarks.");
+      return;
+    }
+    setReportBusy(true);
+    setReportError("");
+    setReportMessage("");
+    try {
+      await invoke("save_report_card_remarks", {
+        studentId: reportStudentId,
+        session: session.trim(),
+        term,
+        teacherRemark: reportTeacherRemark,
+        principalRemark: reportPrincipalRemark,
+      });
+      setReportMessage("Report-card remarks saved.");
+    } catch (error) {
+      setReportError(String(error));
+    } finally {
+      setReportBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (page !== "Report Cards") return;
+    let active = true;
+    async function loadReportSetup() {
+      setReportError("");
+      try {
+        const [loadedClasses, loadedStudents] = await Promise.all([
+          invoke<SchoolClass[]>("get_classes"),
+          invoke<Student[]>("get_students"),
+        ]);
+        if (!active) return;
+        setClasses(loadedClasses);
+        setReportStudents(loadedStudents);
+        const nextClassId = loadedClasses[0]?.id ?? "";
+        setReportClassId((current) => current !== "" && loadedClasses.some((item) => item.id === current) ? current : nextClassId);
+        setReportStudentId((current) => current !== "" && loadedStudents.some((item) => item.id === current) ? current : "");
+        setReportRows([]);
+      } catch (error) {
+        if (active) setReportError(String(error));
+      }
+    }
+    void loadReportSetup();
+    return () => { active = false; };
+  }, [page]);
+
+  useEffect(() => {
+    if (reportClassId === "") {
+      setReportStudentId("");
+      return;
+    }
+    const studentsInClass = reportStudents.filter((student) => student.classId === reportClassId);
+    if (!studentsInClass.some((student) => student.id === reportStudentId)) {
+      setReportStudentId(studentsInClass[0]?.id ?? "");
+      setReportRows([]);
+    }
+  }, [reportClassId, reportStudents, reportStudentId]);
 
   const loadClassResults = async () => {
     setResultError("");
@@ -1736,6 +1838,84 @@ function App() {
                   <p className="page-subtitle">Tied averages share the same competition rank (for example, 1, 2, 2, 4). Students without marks appear after students with results. Grades, teacher/principal remarks, printable report cards and PDF export are not yet implemented.</p>
                 </section>
               )}
+            </section>
+          )}
+          {page === "Report Cards" && (
+            <section className="inner-page">
+              <div className="eyebrow">INDIVIDUAL STUDENT REPORT</div>
+              <h1>Report Cards</h1>
+              <p className="page-subtitle">Prepare an individual student's report card from saved marks. This page is separate from class results and rankings.</p>
+              {reportError && <div className="save-message error-message" role="alert">{reportError}</div>}
+              {reportMessage && <div className="save-message" role="status">{reportMessage}</div>}
+              <section className="panel academic-panel no-print">
+                <div className="section-heading"><div><h2>Select student</h2><p>Choose the class and student for the report card.</p></div></div>
+                <div className="assignment-form">
+                  <label className="field"><span>Class *</span>
+                    <select value={reportClassId} onChange={(event) => { setReportClassId(event.target.value ? Number(event.target.value) : ""); setReportRows([]); setReportMessage(""); }} disabled={reportBusy}>
+                      <option value="">Select class</option>{classes.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                    </select>
+                  </label>
+                  <label className="field"><span>Student *</span>
+                    <select value={reportStudentId} onChange={(event) => { setReportStudentId(event.target.value ? Number(event.target.value) : ""); setReportRows([]); setReportMessage(""); }} disabled={reportBusy || reportClassId === ""}>
+                      <option value="">Select student</option>{reportStudents.filter((student) => student.classId === reportClassId).map((student) => <option key={student.id} value={student.id}>{student.lastName}, {student.firstName} {student.middleName} ({student.studentId})</option>)}
+                    </select>
+                  </label>
+                  <div className="field"><span>Academic session</span><strong>{session}</strong></div>
+                  <div className="field"><span>Term</span><strong>{term}</strong></div>
+                </div>
+                <button className="primary-button" type="button" onClick={() => void loadReportCard()} disabled={reportBusy || reportClassId === "" || reportStudentId === ""}>
+                  {reportBusy ? "Loading..." : "Load report card"}
+                </button>
+              </section>
+              {reportRows.length > 0 && reportStudentId !== "" && (() => {
+                const summary = summarizeClassResults(reportRows).find((item) => item.studentId === reportStudentId);
+                const student = reportStudents.find((item) => item.id === reportStudentId);
+                if (!summary || !student) return null;
+                const gradedSubjects = summary.subjects.filter((subject) => subject.assessmentCount > 0 && subject.maxTotal > 0);
+                const totalScore = gradedSubjects.reduce((sum, subject) => sum + subject.scoreTotal, 0);
+                const totalMaximum = gradedSubjects.reduce((sum, subject) => sum + subject.maxTotal, 0);
+                return (
+                  <>
+                    <section className="panel academic-panel report-card-paper">
+                      <div style={{ textAlign: "center", borderBottom: "2px solid #222", paddingBottom: "16px", marginBottom: "18px" }}>
+                        <h1 style={{ margin: 0 }}>{schoolName || "YOUR SCHOOL"}</h1>
+                        {schoolAddress && <p>{schoolAddress}</p>}
+                        {(schoolPhone || schoolEmail) && <p>{[schoolPhone, schoolEmail].filter(Boolean).join(" · ")}</p>}
+                        <h2 style={{ marginBottom: 0 }}>STUDENT REPORT CARD</h2>
+                        <p>{session} · {term}</p>
+                      </div>
+                      <div className="assignment-form" style={{ marginBottom: "18px" }}>
+                        <div><strong>Student name</strong><p>{student.firstName} {student.middleName} {student.lastName}</p></div>
+                        <div><strong>Student ID</strong><p>{student.studentId}</p></div>
+                        <div><strong>Class</strong><p>{student.className}</p></div>
+                        <div><strong>Gender</strong><p>{student.gender}</p></div>
+                      </div>
+                      <div style={{ overflowX: "auto" }}>
+                        <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: "18px" }}>
+                          <thead><tr><th style={{ textAlign: "left", borderBottom: "1px solid #777", padding: "8px" }}>Subject</th><th style={{ textAlign: "right", borderBottom: "1px solid #777", padding: "8px" }}>Total score</th><th style={{ textAlign: "right", borderBottom: "1px solid #777", padding: "8px" }}>Maximum</th><th style={{ textAlign: "right", borderBottom: "1px solid #777", padding: "8px" }}>Percentage</th></tr></thead>
+                          <tbody>{summary.subjects.map((subject) => <tr key={subject.subjectId}><td style={{ borderBottom: "1px solid #ddd", padding: "8px" }}>{subject.subjectName}</td><td style={{ textAlign: "right", borderBottom: "1px solid #ddd", padding: "8px" }}>{subject.assessmentCount > 0 ? Number(subject.scoreTotal.toFixed(2)) : "—"}</td><td style={{ textAlign: "right", borderBottom: "1px solid #ddd", padding: "8px" }}>{subject.assessmentCount > 0 ? Number(subject.maxTotal.toFixed(2)) : "—"}</td><td style={{ textAlign: "right", borderBottom: "1px solid #ddd", padding: "8px" }}>{subject.assessmentCount > 0 && subject.maxTotal > 0 ? `${((subject.scoreTotal / subject.maxTotal) * 100).toFixed(1)}%` : "—"}</td></tr>)}</tbody>
+                        </table>
+                      </div>
+                      <div className="assignment-form" style={{ marginBottom: "18px" }}>
+                        <div><strong>Total</strong><p>{Number(totalScore.toFixed(2))} / {Number(totalMaximum.toFixed(2))}</p></div>
+                        <div><strong>Average</strong><p>{summary.average === null ? "—" : `${summary.average.toFixed(2)}%`}</p></div>
+                        <div><strong>Class position</strong><p>{summary.average === null ? "Not ranked" : `${summary.position}`}</p></div>
+                      </div>
+                      <div style={{ marginTop: "18px" }}><strong>Class teacher's remark</strong><p style={{ whiteSpace: "pre-wrap", minHeight: "36px" }}>{reportTeacherRemark || "—"}</p></div>
+                      <div style={{ marginTop: "18px" }}><strong>Principal's remark</strong><p style={{ whiteSpace: "pre-wrap", minHeight: "36px" }}>{reportPrincipalRemark || "—"}</p></div>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "28px", marginTop: "36px" }}><div style={{ borderTop: "1px solid #777", paddingTop: "8px" }}>Class teacher's signature</div><div style={{ borderTop: "1px solid #777", paddingTop: "8px" }}>Principal's signature</div></div>
+                    </section>
+                    <section className="panel academic-panel no-print">
+                      <div className="section-heading"><div><h2>Remarks</h2><p>Remarks are saved for this student, session and term.</p></div></div>
+                      <label className="field"><span>Class teacher's remark (max 500 characters)</span><textarea value={reportTeacherRemark} onChange={(event) => setReportTeacherRemark(event.target.value)} maxLength={500} rows={3} disabled={reportBusy} placeholder="Enter the class teacher's remark" /></label>
+                      <label className="field"><span>Principal's remark (max 500 characters)</span><textarea value={reportPrincipalRemark} onChange={(event) => setReportPrincipalRemark(event.target.value)} maxLength={500} rows={3} disabled={reportBusy} placeholder="Enter the principal's remark" /></label>
+                      <div className="academic-item-actions"><button className="primary-button" type="button" onClick={() => void saveReportCardRemarks()} disabled={reportBusy}>Save remarks</button><button className="secondary-button" type="button" onClick={() => window.print()}>Print / Save as PDF</button></div>
+                      <p className="page-subtitle">Use the print dialog's “Save as PDF” option to create a PDF. Automatic PDF generation and grade labels are not implemented yet.</p>
+                    </section>
+                  </>
+                );
+              })()}
+              {reportClassId !== "" && reportStudentId === "" && <p className="empty-state">No students are registered in this class yet.</p>}
             </section>
           )}
           {page === "Settings" && (

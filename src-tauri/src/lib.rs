@@ -746,6 +746,17 @@ fn get_mark_entries(
     assessment_name: String,
 ) -> Result<Vec<MarkEntryRow>, String> {
     let connection = database_connection(&app)?;
+    let assigned: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM class_subjects
+            WHERE class_id = ?1 AND subject_id = ?2
+         )",
+        params![class_id, subject_id],
+        |row| row.get(0),
+    ).map_err(|e| format!("Cannot validate class subject assignment: {e}"))?;
+    if !assigned {
+        return Err("This subject is not assigned to the selected class. Assign it in Classes & Subjects first.".to_string());
+    }
     let mut statement = connection.prepare(
         "SELECT s.id, s.student_id,
                 trim(s.first_name || ' ' || s.middle_name || ' ' || s.last_name),
@@ -796,10 +807,19 @@ fn save_mark_entry(
         "SELECT EXISTS(SELECT 1 FROM students WHERE id = ?1)", params![student_id], |row| row.get(0)
     ).map_err(|e| format!("Cannot validate student: {e}"))?;
     if !valid_student { return Err("Student record not found.".to_string()); }
-    let valid_subject: bool = connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM subjects WHERE id = ?1)", params![subject_id], |row| row.get(0)
-    ).map_err(|e| format!("Cannot validate subject: {e}"))?;
-    if !valid_subject { return Err("Subject not found.".to_string()); }
+    let valid_subject_for_student: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1
+            FROM students s
+            JOIN class_subjects cs ON cs.class_id = s.class_id
+            WHERE s.id = ?1 AND cs.subject_id = ?2
+         )",
+        params![student_id, subject_id],
+        |row| row.get(0),
+    ).map_err(|e| format!("Cannot validate subject for student: {e}"))?;
+    if !valid_subject_for_student {
+        return Err("This subject is not assigned to the student's class. No mark was saved.".to_string());
+    }
     connection.execute(
         "INSERT INTO mark_entries
             (student_id, subject_id, session, term, assessment_name, score, max_score, updated_at)

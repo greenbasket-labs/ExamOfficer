@@ -728,6 +728,65 @@ fn delete_student(app: tauri::AppHandle, id: i64) -> Result<(), String> {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct ClassResultRow {
+    student_id: i64,
+    student_code: String,
+    student_name: String,
+    subject_id: Option<i64>,
+    subject_name: Option<String>,
+    score_total: f64,
+    max_total: f64,
+    assessment_count: i64,
+}
+
+#[tauri::command]
+fn get_class_results(
+    app: tauri::AppHandle,
+    class_id: i64,
+    session: String,
+    term: String,
+) -> Result<Vec<ClassResultRow>, String> {
+    let connection = database_connection(&app)?;
+    let mut statement = connection.prepare(
+        "SELECT s.id, s.student_id,
+                trim(s.first_name || ' ' || s.middle_name || ' ' || s.last_name),
+                sub.id, sub.name,
+                COALESCE(SUM(m.score), 0),
+                COALESCE(SUM(m.max_score), 0),
+                COUNT(m.id)
+         FROM students s
+         LEFT JOIN class_subjects cs ON cs.class_id = s.class_id
+         LEFT JOIN subjects sub ON sub.id = cs.subject_id
+         LEFT JOIN mark_entries m
+           ON m.student_id = s.id
+          AND m.subject_id = sub.id
+          AND m.session = ?2
+          AND m.term = ?3
+         WHERE s.class_id = ?1
+         GROUP BY s.id, s.student_id, s.first_name, s.middle_name, s.last_name,
+                  sub.id, sub.name
+         ORDER BY s.last_name COLLATE NOCASE, s.first_name COLLATE NOCASE, s.student_id,
+                  sub.name COLLATE NOCASE"
+    ).map_err(|e| format!("Cannot prepare results query: {e}"))?;
+    let rows = statement.query_map(
+        params![class_id, session.trim(), term.trim()],
+        |row| Ok(ClassResultRow {
+            student_id: row.get(0)?,
+            student_code: row.get(1)?,
+            student_name: row.get(2)?,
+            subject_id: row.get(3)?,
+            subject_name: row.get(4)?,
+            score_total: row.get(5)?,
+            max_total: row.get(6)?,
+            assessment_count: row.get(7)?,
+        }),
+    ).map_err(|e| format!("Cannot query class results: {e}"))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Cannot read class results: {e}"))
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct MarkEntryRow {
     student_id: i64,
     student_code: String,
@@ -861,6 +920,7 @@ pub fn run() {
             remove_class_subject,
             get_mark_entries,
             save_mark_entry,
+            get_class_results,
             get_students,
             create_student,
             delete_student

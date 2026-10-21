@@ -558,6 +558,8 @@ function App() {
         assessmentName: markAssessment.trim(),
       });
       setMarkRows(rows);
+      const savedMaximum = rows.find((row) => row.maxScore !== null)?.maxScore;
+      if (savedMaximum !== undefined) setMarkMaxScore(String(savedMaximum));
       setMarkInputs(Object.fromEntries(rows.map((row) => [
         row.studentId, row.score === null ? "" : String(row.score)
       ])));

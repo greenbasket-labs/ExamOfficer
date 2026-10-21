@@ -326,7 +326,7 @@ fn create_database_backup(app: tauri::AppHandle) -> Result<String, String> {
     drop(connection);
     let bytes = std::fs::read(&database_path)
         .map_err(|e| format!("Cannot read the school database for backup: {e}"))?;
-    if bytes.len() < 16 || !bytes.starts_with(b"SQLite format 3\\0") {
+    if bytes.len() < 16 || !bytes.starts_with(b"SQLite format 3\0") {
         return Err("The current school database is not a valid SQLite database.".to_string());
     }
     Ok(encode_base64(&bytes))
@@ -338,7 +338,7 @@ fn restore_database_backup(app: tauri::AppHandle, backup_base64: String) -> Resu
         return Err("This backup is too large to restore safely (maximum encoded size: 256 MB).".to_string());
     }
     let bytes = decode_base64(&backup_base64)?;
-    if bytes.len() < 16 || !bytes.starts_with(b"SQLite format 3\\0") {
+    if bytes.len() < 16 || !bytes.starts_with(b"SQLite format 3\0") {
         return Err("This file is not a valid ExamOfficer SQLite backup.".to_string());
     }
 

@@ -1,4 +1,4 @@
-﻿import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
@@ -282,6 +282,9 @@ function summarizeClassResults(rows: ClassResultRow[]): StudentResultSummary[] {
 
 function App() {
   const [page, setPage] = useState<Page>("Dashboard");
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [backupMessage, setBackupMessage] = useState("");
+  const [backupError, setBackupError] = useState("");
   const [schoolName, setSchoolName] = useState("");
   const [schoolAddress, setSchoolAddress] = useState("");
   const [schoolEmail, setSchoolEmail] = useState("");
@@ -1445,6 +1448,55 @@ function App() {
     item.label.toLowerCase().includes(search.toLowerCase()),
   );
 
+  async function downloadDatabaseBackup() {
+    setBackupBusy(true);
+    setBackupMessage("");
+    setBackupError("");
+    try {
+      const encoded = await invoke<string>("create_database_backup");
+      const binary = window.atob(encoded);
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+      const url = URL.createObjectURL(new Blob([bytes], { type: "application/vnd.sqlite3" }));
+      const link = document.createElement("a");
+      const date = new Date().toISOString().slice(0, 10);
+      link.href = url;
+      link.download = `examofficer-backup-${date}.sqlite`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setBackupMessage("Backup prepared. Check your browser/WebView downloads location and copy the file somewhere safe.");
+    } catch (error) {
+      setBackupError(String(error));
+    } finally {
+      setBackupBusy(false);
+    }
+  }
+
+  async function restoreDatabaseBackup(file: File | undefined) {
+    if (!file) return;
+    setBackupMessage("");
+    setBackupError("");
+    if (!window.confirm("Restoring a backup replaces the current school database. ExamOfficer will first create a safety copy of the current database. Continue only if you are sure this is the correct backup.")) return;
+    setBackupBusy(true);
+    try {
+      if (file.size > 192 * 1024 * 1024) throw new Error("Please choose a backup smaller than 192 MB.");
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      let binary = "";
+      const chunkSize = 0x8000;
+      for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+        binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length)));
+      }
+      const result = await invoke<string>("restore_database_backup", { backupBase64: window.btoa(binary) });
+      setBackupMessage(result);
+    } catch (error) {
+      setBackupError(String(error));
+    } finally {
+      setBackupBusy(false);
+    }
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -2554,6 +2606,19 @@ function App() {
                   <button className="primary-button" type="button" onClick={() => void savePositionRemarkSettings()} disabled={positionSettingsBusy || positionRemarkRules.length !== 4}>{positionSettingsBusy ? "Saving..." : "Save position remarks"}</button>
                   <button className="secondary-button" type="button" onClick={() => void loadPositionRemarkSettings()} disabled={positionSettingsBusy}>Reload position remarks</button>
                 </div>
+              </section>
+              <section className="panel academic-panel">
+                <div className="section-heading"><div><h2>Database backup and restore</h2><p>Back up the complete local school database, including students, classes, subjects, marks, and grading settings.</p></div></div>
+                {backupError && <div className="save-message error-message" role="alert">{backupError}</div>}
+                {backupMessage && <div className="save-message" role="status">{backupMessage}</div>}
+                <div className="academic-item-actions">
+                  <button className="primary-button" type="button" onClick={() => void downloadDatabaseBackup()} disabled={backupBusy}>{backupBusy ? "Working..." : "Create database backup"}</button>
+                  <label className="secondary-button" style={{ display: "inline-flex", alignItems: "center", cursor: backupBusy ? "not-allowed" : "pointer", opacity: backupBusy ? 0.6 : 1 }}>
+                    Restore from backup
+                    <input type="file" accept=".sqlite,.sqlite3,.db,application/vnd.sqlite3,application/x-sqlite3" disabled={backupBusy} style={{ display: "none" }} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; void restoreDatabaseBackup(file); }} />
+                  </label>
+                </div>
+                <p className="page-subtitle">Restore checks SQLite integrity and required ExamOfficer tables before replacing anything. A safety copy of the current database is made first. Restart the app after a successful restore so every screen reloads the restored data. Keep backup files in a secure location.</p>
               </section>
             </section>
           )}

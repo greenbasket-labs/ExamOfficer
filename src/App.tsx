@@ -431,6 +431,7 @@ function App() {
       }
       const read = (row: string[], index: number) => index >= 0 ? (row[index] ?? "").trim() : "";
       const seenInFile = new Set<string>();
+      const seenAdmissionNumbers = new Set<string>();
       const preview = matrix.slice(1).map((row, offset): StudentImportPreviewRow => {
         const fullName = read(row, nameIndex);
         const names = splitStudentName(fullName);
@@ -461,6 +462,7 @@ function App() {
         const dob = read(row, dobIndex);
         if (dob && !/^\d{4}-\d{2}-\d{2}$/.test(dob)) errors.push("Date of birth must use YYYY-MM-DD");
         const key = `${names.firstName.toLowerCase()}|${names.middleName.toLowerCase()}|${names.lastName.toLowerCase()}|${classRecord?.id ?? className.toLowerCase()}`;
+        const admissionNumber = read(row, admissionIndex);
         const existingDuplicate = Boolean(classRecord && students.some((item) =>
           item.classId === classRecord.id &&
           item.firstName.trim().toLowerCase() === names.firstName.toLowerCase() &&
@@ -468,9 +470,13 @@ function App() {
           item.lastName.trim().toLowerCase() === names.lastName.toLowerCase()
         ));
         const repeatedInFile = seenInFile.has(key);
+        const repeatedAdmissionNumber = Boolean(admissionNumber && seenAdmissionNumbers.has(admissionNumber.toLowerCase()));
         seenInFile.add(key);
-        const duplicate = existingDuplicate || repeatedInFile;
-        if (duplicate) errors.push(existingDuplicate ? "Student already exists in this class" : "Duplicate row in this file");
+        if (admissionNumber) seenAdmissionNumbers.add(admissionNumber.toLowerCase());
+        const duplicate = existingDuplicate || repeatedInFile || repeatedAdmissionNumber;
+        if (existingDuplicate) errors.push("Student already exists in this class");
+        else if (repeatedInFile) errors.push("Duplicate row in this file");
+        if (repeatedAdmissionNumber) errors.push("Admission number is repeated in this file");
         return {
           rowNumber: offset + 2,
           ...names,
@@ -480,7 +486,7 @@ function App() {
           className,
           classId: classRecord?.id ?? null,
           dateOfBirth: dob,
-          admissionNumber: read(row, admissionIndex),
+          admissionNumber,
           guardianPhone: read(row, phoneIndex),
           errors,
           duplicate,

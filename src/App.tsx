@@ -133,6 +133,34 @@ function parseCsv(text: string): string[][] {
   return rows;
 }
 
+
+function parseStudentPdfText(text: string, configuredClasses: SchoolClass[]): string[][] {
+  const classNames = configuredClasses.map((item) => item.name.trim()).filter(Boolean).sort((a, b) => b.length - a.length);
+  const lines = text.split(/\r?\n/).map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean);
+  const rows: string[][] = [];
+  const seen = new Set<string>();
+  for (const line of lines) {
+    const genderMatch = /\b(Female|Male)\b/i.exec(line);
+    const sectionMatch = /\b(Junior Secondary|Senior Secondary|Nursery|Primary)\b/i.exec(line);
+    if (!genderMatch || !sectionMatch) continue;
+    const className = classNames.find((name) => line.toLowerCase().includes(name.toLowerCase()));
+    if (!className) continue;
+    const genderIndex = genderMatch.index;
+    let name = line.slice(0, genderIndex).replace(/^\d+\s+/, "").trim();
+    name = name.replace(/[|•·]+$/g, "").trim();
+    if (!name || name.length > 120) continue;
+    const section = sectionMatch[0];
+    const dateMatch = /\b\d{4}-\d{2}-\d{2}\b/.exec(line);
+    const phoneMatch = /\b0\d{10}\b/.exec(line);
+    const admissionMatch = /\b[A-Z]{2,}-(?:[A-Z0-9]+-?)+\b/i.exec(line);
+    const key = [name, genderMatch[1], section, className, dateMatch?.[0] ?? "", admissionMatch?.[0] ?? "", phoneMatch?.[0] ?? ""].join("|").toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rows.push([name, genderMatch[1][0].toUpperCase() + genderMatch[1].slice(1).toLowerCase(), section, className, dateMatch?.[0] ?? "", admissionMatch?.[0] ?? "", phoneMatch?.[0] ?? ""]);
+  }
+  return rows;
+}
+
 function normalizeColumn(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
@@ -406,12 +434,38 @@ function App() {
     setStudentImportMessage("");
     setStudentImportRows([]);
     setStudentImportFileName(file.name);
-    if (!file.name.toLowerCase().endsWith(".csv")) {
-      setStudentImportError("Please choose a CSV file. In Excel, use Save As → CSV UTF-8 (Comma delimited) first.");
+    const isPdf = file.name.toLowerCase().endsWith(".pdf");
+    const isCsv = file.name.toLowerCase().endsWith(".csv");
+    if (!isCsv && !isPdf) {
+      setStudentImportError("Please choose a CSV file or a text-based PDF. Excel workbooks must first be saved as CSV UTF-8.");
       return;
     }
     try {
-      const matrix = parseCsv(await file.text());
+      let matrix: string[][];
+      if (isPdf) {
+        if (file.size > 10 * 1024 * 1024) {
+          setStudentImportError("PDF is too large. Please choose a file smaller than 10 MB.");
+          return;
+        }
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        let binary = "";
+        const chunkSize = 0x8000;
+        for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+          binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length)));
+        }
+        const extractedText = await invoke<string>("extract_student_pdf_text", { pdfBase64: btoa(binary) });
+        const pdfRows = parseStudentPdfText(extractedText, classes);
+        if (pdfRows.length === 0) {
+          setStudentImportError("Text was extracted, but student rows could not be identified reliably. Please use CSV for this PDF or adjust its table to include one student per row with name, gender, section, class, and any available details.");
+          return;
+        }
+        matrix = [
+          ["Student Name", "Gender", "Section", "Class", "Date of Birth (YYYY-MM-DD)", "Existing Admission Number (optional)", "Guardian Phone (optional)"],
+          ...pdfRows,
+        ];
+      } else {
+        matrix = parseCsv(await file.text());
+      }
       if (matrix.length < 2) {
         setStudentImportError("The CSV must contain a header row and at least one student.");
         return;
@@ -1931,8 +1985,8 @@ function App() {
               <section className="panel academic-panel">
                 <div className="section-heading">
                   <div>
-                    <h2>Import students from CSV</h2>
-                    <p>Upload one combined list for Nursery, Primary, Junior Secondary, and Senior Secondary. Review the preview before approving any changes.</p>
+                    <h2>Import students from CSV or PDF</h2>
+                    <p>Upload one combined CSV or a text-based PDF student list for Nursery, Primary, Junior Secondary, and Senior Secondary. Review the preview before approving any changes. Scanned PDFs are not supported yet.</p>
                   </div>
                 </div>
                 {studentImportError && <p role="alert">{studentImportError}</p>}
@@ -1946,7 +2000,7 @@ function App() {
                   }} />
                 </label>
                 {studentImportFileName && <p className="muted-copy">File: {studentImportFileName}</p>}
-                <p className="muted-copy">Required columns: Student Name, Gender, Section, Class. Optional columns: Date of Birth (YYYY-MM-DD), Existing Admission Number (optional), Guardian Phone (optional). Export the sample workbook's Students sheet as CSV UTF-8 before importing.</p>
+                <p className="muted-copy">Required CSV columns: Student Name, Gender, Section, Class. Optional columns: Date of Birth (YYYY-MM-DD), Existing Admission Number, Guardian Phone. Text-based PDFs are read automatically where the student rows can be identified; scanned PDFs need OCR support, which is not included yet. Review the preview carefully before approving.</p>
                 {studentImportRows.length > 0 && (
                   <>
                     <div className="section-heading">

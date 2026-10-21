@@ -1339,3 +1339,281 @@ h1 {
     width: 100%;
   }
 }
+
+
+/* Report card print layout: print only the individual report card. */
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 12mm;
+  }
+
+  body * {
+    visibility: hidden !important;
+  }
+
+  .report-card-paper,
+  .report-card-paper * {
+    visibility: visible !important;
+  }
+
+  .report-card-paper {
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    max-width: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    color: #000 !important;
+    background: #fff !important;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  .report-card-paper table {
+    page-break-inside: avoid;
+  }
+}
+
+
+/* Student import preview */
+.table-scroll {
+  width: 100%;
+  overflow-x: auto;
+  margin: 16px 0;
+  border: 1px solid #e5e9f0;
+  border-radius: 10px;
+}
+.data-table {
+  width: 100%;
+  min-width: 680px;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+.data-table th,
+.data-table td {
+  padding: 10px 12px;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid #e5e9f0;
+}
+.data-table th {
+  background: #f5f7fb;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.data-table tr:last-child td {
+  border-bottom: 0;
+}
+.muted-copy {
+  color: #667085;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+
+/* Refined printable report card: clear school identity, compact academic summary, and restrained school colours. */
+.report-card-paper {
+  --report-navy: #12366a;
+  --report-blue: #eaf3ff;
+  --report-gold: #e9b949;
+  --report-ink: #1d2939;
+  position: relative;
+  overflow: hidden;
+  margin-top: 22px;
+  padding: 28px !important;
+  border: 1px solid #c9d7e8 !important;
+  border-radius: 14px !important;
+  color: var(--report-ink);
+  background: #fff;
+  box-shadow: 0 8px 28px #1831530d !important;
+}
+.report-card-paper > div:first-child {
+  border-bottom: 3px solid var(--report-navy) !important;
+  padding-bottom: 15px !important;
+  margin-bottom: 18px !important;
+}
+.report-card-paper > div:first-child h1 {
+  color: var(--report-navy);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(21px, 2.5vw, 30px);
+  font-weight: 800;
+  letter-spacing: .2px;
+  text-transform: uppercase;
+}
+.report-card-paper > div:first-child p {
+  margin: 5px 0;
+  color: #53657b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.report-card-paper > div:first-child h2 {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 8px 18px;
+  border-radius: 5px;
+  color: #fff;
+  background: var(--report-navy);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 17px;
+  letter-spacing: .7px;
+}
+.report-card-paper > div:nth-child(2) {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 12px 22px !important;
+  padding: 16px;
+  border: 1px solid #cbdcf0;
+  border-radius: 9px;
+  background: #f4f8fd;
+}
+.report-card-paper > div:nth-child(2) > div {
+  min-width: 0;
+}
+.report-card-paper > div:nth-child(2) strong,
+.report-card-paper > div:nth-child(4) strong,
+.report-card-paper > div:nth-child(5) strong,
+.report-card-paper > div:nth-child(6) strong {
+  color: var(--report-navy);
+  font-size: 11px;
+  letter-spacing: .2px;
+  text-transform: uppercase;
+}
+.report-card-paper > div:nth-child(2) p {
+  margin: 4px 0 0;
+  font-size: 13px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+.report-card-paper > div:nth-child(3) {
+  margin-top: 16px;
+}
+.report-card-paper table {
+  border-collapse: separate !important;
+  border-spacing: 0;
+  overflow: hidden;
+  border: 1px solid #d5deea;
+  border-radius: 8px;
+  font-size: 11px;
+}
+.report-card-paper table th {
+  padding: 10px 9px !important;
+  border-bottom: 0 !important;
+  color: #fff;
+  background: var(--report-navy);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: .25px;
+  text-transform: uppercase;
+}
+.report-card-paper table td {
+  padding: 8px 9px !important;
+  border-bottom: 1px solid #e6ebf2 !important;
+  line-height: 1.35;
+}
+.report-card-paper table tbody tr:nth-child(even) td {
+  background: #f7f9fc;
+}
+.report-card-paper table tbody tr:last-child td {
+  border-bottom: 0 !important;
+}
+.report-card-paper > div:nth-child(4) {
+  display: grid !important;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px !important;
+  margin-bottom: 14px !important;
+}
+.report-card-paper > div:nth-child(4) > div {
+  padding: 12px;
+  border: 1px solid #d8e4f2;
+  border-radius: 8px;
+  background: #f4f8fd;
+}
+.report-card-paper > div:nth-child(4) p {
+  margin: 6px 0 0;
+  color: var(--report-navy);
+  font-family: "Manrope", sans-serif;
+  font-size: 20px;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+.report-card-paper > div:nth-child(5) {
+  margin-top: 12px !important;
+  padding: 10px 14px;
+  border: 1px solid #d8e4f2;
+  border-radius: 8px;
+  background: #f4f8fd;
+}
+.report-card-paper > div:nth-child(5) p {
+  margin: 6px 0 0;
+  color: var(--report-navy);
+  font-family: "Manrope", sans-serif;
+  font-size: 18px;
+  font-weight: 800;
+}
+.report-card-paper > div:nth-child(6),
+.report-card-paper > div:nth-child(7),
+.report-card-paper > div:nth-child(8) {
+  margin-top: 12px !important;
+  padding: 12px 14px;
+  border: 1px solid #dce5ef;
+  border-radius: 8px;
+  background: #fff;
+}
+.report-card-paper > div:nth-child(6) { border-left: 4px solid #5484c7; }
+.report-card-paper > div:nth-child(7) { border-left: 4px solid var(--report-gold); }
+.report-card-paper > div:nth-child(8) { border-left: 4px solid #55a47c; }
+.report-card-paper > div:nth-child(6) p,
+.report-card-paper > div:nth-child(7) p,
+.report-card-paper > div:nth-child(8) p {
+  margin: 6px 0 0;
+  color: #344054;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.report-card-paper > div:last-child {
+  gap: 28px !important;
+  margin-top: 32px !important;
+}
+.report-card-paper > div:last-child > div {
+  padding-top: 9px !important;
+  border-color: #8b98a9 !important;
+  color: #475467;
+  font-size: 11px;
+  text-align: center;
+}
+@media (max-width: 560px) {
+  .report-card-paper { padding: 14px !important; }
+  .report-card-paper > div:nth-child(2) { grid-template-columns: 1fr; gap: 10px !important; }
+  .report-card-paper > div:nth-child(4) { grid-template-columns: 1fr; }
+  .report-card-paper table { font-size: 10px; }
+  .report-card-paper table th, .report-card-paper table td { padding: 6px 5px !important; }
+}
+@media print {
+  @page { size: A4 portrait; margin: 9mm; }
+  .report-card-paper {
+    border: 1px solid #c9d7e8 !important;
+    border-radius: 0 !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+  .report-card-paper > div:first-child h1 { font-size: 22px; }
+  .report-card-paper > div:first-child p { font-size: 9px; }
+  .report-card-paper > div:nth-child(2) { padding: 10px; }
+  .report-card-paper table { font-size: 9px; }
+  .report-card-paper table th, .report-card-paper table td { padding: 5px 6px !important; }
+  .report-card-paper > div:nth-child(4) p { font-size: 16px; }
+  .report-card-paper > div:nth-child(5),
+  .report-card-paper > div:nth-child(6),
+  .report-card-paper > div:nth-child(7),
+  .report-card-paper > div:nth-child(8) { padding: 8px 10px; }
+}
+

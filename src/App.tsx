@@ -1,4 +1,4 @@
-﻿import { useEffect, useState } from "react";
+﻿import { Fragment, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
@@ -9,6 +9,7 @@ type Page =
   | "Classes & Subjects"
   | "Marks Entry"
   | "Results & Reports"
+  | "Report Cards"
   | "Settings";
 
 const navigation: { label: Page; icon: string; group: string }[] = [
@@ -18,6 +19,7 @@ const navigation: { label: Page; icon: string; group: string }[] = [
   { label: "Classes & Subjects", icon: "â–¤", group: "SCHOOL MANAGEMENT" },
   { label: "Marks Entry", icon: "âœŽ", group: "EXAMINATIONS" },
   { label: "Results & Reports", icon: "â–¥", group: "EXAMINATIONS" },
+  { label: "Report Cards", icon: "▤", group: "EXAMINATIONS" },
   { label: "Settings", icon: "âš™", group: "SYSTEM" },
 ];
 
@@ -28,6 +30,20 @@ type SchoolProfile = {
   schoolPhone: string;
   session: string;
   term: string;
+};
+
+type GradeRemarkRule = {
+  minimumScore: number;
+  gradeLabel: string;
+  teacherRemark: string;
+  principalRemark: string;
+  sortOrder: number;
+};
+
+type PositionRemarkRule = {
+  positionKey: string;
+  positionLabel: string;
+  remark: string;
 };
 
 type SchoolSection = {
@@ -70,6 +86,200 @@ type Student = {
   admissionDate: string;
 };
 
+type StudentImportPreviewRow = {
+  rowNumber: number;
+  firstName: string;
+  middleName: string;
+  lastName: string;
+  gender: string;
+  sectionName: string;
+  sectionCode: string;
+  className: string;
+  classId: number | null;
+  dateOfBirth: string;
+  admissionNumber: string;
+  guardianPhone: string;
+  errors: string[];
+  duplicate: boolean;
+};
+
+function parseCsv(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = "";
+  let quoted = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+    if (char === '"' && quoted && text[i + 1] === '"') {
+      cell += '"';
+      i += 1;
+    } else if (char === '"') {
+      quoted = !quoted;
+    } else if (char === "," && !quoted) {
+      row.push(cell.trim());
+      cell = "";
+    } else if ((char === "\n" || char === "\r") && !quoted) {
+      if (char === "\r" && text[i + 1] === "\n") i += 1;
+      row.push(cell.trim());
+      if (row.some((value) => value !== "")) rows.push(row);
+      row = [];
+      cell = "";
+    } else {
+      cell += char;
+    }
+  }
+  row.push(cell.trim());
+  if (row.some((value) => value !== "")) rows.push(row);
+  return rows;
+}
+
+
+function parseStudentPdfText(text: string, configuredClasses: SchoolClass[]): string[][] {
+  const normalizeClassName = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const classNames = configuredClasses.map((item) => item.name.trim()).filter(Boolean).sort((a, b) => b.length - a.length);
+  const lines = text.split(/\r?\n/).map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean);
+  const rows: string[][] = [];
+  const seen = new Set<string>();
+  for (const line of lines) {
+    const genderMatch = /\b(Female|Male)\b/i.exec(line);
+    const sectionMatch = /\b(Junior Secondary|Senior Secondary|Nursery|Primary)\b/i.exec(line);
+    if (!genderMatch || !sectionMatch) continue;
+    // PDF text extraction can remove spaces from labels such as "SS 1" -> "SS1".
+    // Compare normalized labels while preferring the longest configured class name.
+    const normalizedLine = normalizeClassName(line);
+    const className = classNames.find((name) => normalizedLine.includes(normalizeClassName(name)));
+    if (!className) continue;
+    const genderIndex = genderMatch.index;
+    let name = line.slice(0, genderIndex).replace(/^\d+\s+/, "").trim();
+    name = name.replace(/[|•·]+$/g, "").trim();
+    if (!name || name.length > 120) continue;
+    // Remove common table separators and a leading row number if extraction inserted one.
+    name = name.replace(/^[#.)\s-]*\d+[.)\s-]+/, "").replace(/[|•·]+$/g, "").trim();
+    if (!name) continue;
+    const section = sectionMatch[0];
+    const dateMatch = /\b\d{4}-\d{2}-\d{2}\b/.exec(line);
+    const phoneMatch = /\b0\d{10}\b/.exec(line);
+    const admissionMatch = /\b[A-Z]{2,}-(?:[A-Z0-9]+-?)+\b/i.exec(line);
+    const key = [name, genderMatch[1], section, className, dateMatch?.[0] ?? "", admissionMatch?.[0] ?? "", phoneMatch?.[0] ?? ""].join("|").toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rows.push([name, genderMatch[1][0].toUpperCase() + genderMatch[1].slice(1).toLowerCase(), section, className, dateMatch?.[0] ?? "", admissionMatch?.[0] ?? "", phoneMatch?.[0] ?? ""]);
+  }
+  return rows;
+}
+
+function normalizeColumn(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function splitStudentName(value: string): { firstName: string; middleName: string; lastName: string } {
+  const parts = value.trim().split(/\s+/).filter(Boolean);
+  return {
+    firstName: parts[0] ?? "",
+    middleName: parts.length > 2 ? parts.slice(1, -1).join(" ") : "",
+    lastName: parts.length > 1 ? parts[parts.length - 1] : "",
+  };
+}
+
+type MarkEntryRow = {
+  studentId: number;
+  studentCode: string;
+  studentName: string;
+  score: number | null;
+  maxScore: number | null;
+};
+
+type BulkMarkImportRow = {
+  rowNumber: number;
+  studentId: number | null;
+  studentCode: string;
+  studentName: string;
+  className: string;
+  subjectName: string;
+  subjectId: number | null;
+  session: string;
+  term: string;
+  assessmentName: string;
+  score: number | null;
+  maxScore: number | null;
+  existing: boolean;
+  existingScore: number | null;
+  errors: string[];
+};
+
+type ClassResultRow = {
+  studentId: number;
+  studentCode: string;
+  studentName: string;
+  subjectId: number | null;
+  subjectName: string | null;
+  scoreTotal: number;
+  maxTotal: number;
+  assessmentCount: number;
+};
+
+type StudentResultSummary = {
+  studentId: number;
+  studentCode: string;
+  studentName: string;
+  subjects: { subjectId: number; subjectName: string; scoreTotal: number; maxTotal: number; assessmentCount: number }[];
+  average: number | null;
+  position: number;
+};
+
+function summarizeClassResults(rows: ClassResultRow[]): StudentResultSummary[] {
+  const grouped = new Map<number, Omit<StudentResultSummary, "average" | "position">>();
+  for (const row of rows) {
+    let student = grouped.get(row.studentId);
+    if (!student) {
+      student = {
+        studentId: row.studentId,
+        studentCode: row.studentCode,
+        studentName: row.studentName,
+        subjects: [],
+      };
+      grouped.set(row.studentId, student);
+    }
+    if (row.subjectId !== null && row.subjectName !== null) {
+      student.subjects.push({
+        subjectId: row.subjectId,
+        subjectName: row.subjectName,
+        scoreTotal: row.scoreTotal,
+        maxTotal: row.maxTotal,
+        assessmentCount: row.assessmentCount,
+      });
+    }
+  }
+
+  const summaries = Array.from(grouped.values()).map((student) => {
+    const percentages = student.subjects
+      .filter((subject) => subject.assessmentCount > 0 && subject.maxTotal > 0)
+      .map((subject) => (subject.scoreTotal / subject.maxTotal) * 100);
+    const average = percentages.length
+      ? Math.round((percentages.reduce((sum, value) => sum + value, 0) / percentages.length) * 100) / 100
+      : null;
+    return { ...student, average, position: 0 };
+  });
+
+  summaries.sort((a, b) => {
+    if (a.average === null && b.average !== null) return 1;
+    if (a.average !== null && b.average === null) return -1;
+    if (a.average !== null && b.average !== null && a.average !== b.average) return b.average - a.average;
+    return a.studentName.localeCompare(b.studentName);
+  });
+
+  let lastAverage: number | null | undefined = undefined;
+  let lastPosition = 0;
+  summaries.forEach((student, index) => {
+    if (index === 0 || student.average !== lastAverage) {
+      lastPosition = index + 1;
+      lastAverage = student.average;
+    }
+    student.position = lastPosition;
+  });
+  return summaries;
+}
+
 function App() {
   const [page, setPage] = useState<Page>("Dashboard");
   const [schoolName, setSchoolName] = useState("");
@@ -110,6 +320,47 @@ function App() {
   const [studentError, setStudentError] = useState("");
   const [studentMessage, setStudentMessage] = useState("");
   const [studentBusy, setStudentBusy] = useState(false);
+  const [studentImportRows, setStudentImportRows] = useState<StudentImportPreviewRow[]>([]);
+  const [studentImportFileName, setStudentImportFileName] = useState("");
+  const [studentImportError, setStudentImportError] = useState("");
+  const [studentImportMessage, setStudentImportMessage] = useState("");
+  const [studentImportBusy, setStudentImportBusy] = useState(false);
+  const [markClassId, setMarkClassId] = useState<number | "">("");
+  const [markSubjectId, setMarkSubjectId] = useState<number | "">("");
+  const [markClassSubjects, setMarkClassSubjects] = useState<ClassSubject[]>([]);
+  const [markAssessment, setMarkAssessment] = useState("Examination");
+  const [markMaxScore, setMarkMaxScore] = useState("100");
+  const [markRows, setMarkRows] = useState<MarkEntryRow[]>([]);
+  const [markInputs, setMarkInputs] = useState<Record<number, string>>({});
+  const [markError, setMarkError] = useState("");
+  const [markMessage, setMarkMessage] = useState("");
+  const [markBusy, setMarkBusy] = useState(false);
+  const [bulkMarkRows, setBulkMarkRows] = useState<BulkMarkImportRow[]>([]);
+  const [bulkMarkFileName, setBulkMarkFileName] = useState("");
+  const [bulkMarkError, setBulkMarkError] = useState("");
+  const [bulkMarkMessage, setBulkMarkMessage] = useState("");
+  const [bulkMarkBusy, setBulkMarkBusy] = useState(false);
+  const [bulkMarkAllowOverwrite, setBulkMarkAllowOverwrite] = useState(false);
+  const [resultClassId, setResultClassId] = useState<number | "">("");
+  const [resultRows, setResultRows] = useState<ClassResultRow[]>([]);
+  const [resultError, setResultError] = useState("");
+  const [resultMessage, setResultMessage] = useState("");
+  const [resultBusy, setResultBusy] = useState(false);
+  const [reportStudents, setReportStudents] = useState<Student[]>([]);
+  const [reportClassId, setReportClassId] = useState<number | "">("");
+  const [reportStudentId, setReportStudentId] = useState<number | "">("");
+  const [reportRows, setReportRows] = useState<ClassResultRow[]>([]);
+  const [reportError, setReportError] = useState("");
+  const [reportMessage, setReportMessage] = useState("");
+  const [reportBusy, setReportBusy] = useState(false);
+  const [gradeRules, setGradeRules] = useState<GradeRemarkRule[]>([]);
+  const [gradeSettingsError, setGradeSettingsError] = useState("");
+  const [gradeSettingsMessage, setGradeSettingsMessage] = useState("");
+  const [gradeSettingsBusy, setGradeSettingsBusy] = useState(false);
+  const [positionRemarkRules, setPositionRemarkRules] = useState<PositionRemarkRule[]>([]);
+  const [positionSettingsError, setPositionSettingsError] = useState("");
+  const [positionSettingsMessage, setPositionSettingsMessage] = useState("");
+  const [positionSettingsBusy, setPositionSettingsBusy] = useState(false);
 
   // Keep a class selected whenever classes are available.
   useEffect(() => {
@@ -206,6 +457,169 @@ function App() {
       setStudentError(String(error));
     } finally {
       setStudentBusy(false);
+    }
+  };
+
+  const previewStudentImport = async (file: File) => {
+    setStudentImportError("");
+    setStudentImportMessage("");
+    setStudentImportRows([]);
+    setStudentImportFileName(file.name);
+    const isPdf = file.name.toLowerCase().endsWith(".pdf");
+    const isCsv = file.name.toLowerCase().endsWith(".csv");
+    if (!isCsv && !isPdf) {
+      setStudentImportError("Please choose a CSV file or a text-based PDF. Excel workbooks must first be saved as CSV UTF-8.");
+      return;
+    }
+    try {
+      let matrix: string[][];
+      if (isPdf) {
+        if (file.size > 10 * 1024 * 1024) {
+          setStudentImportError("PDF is too large. Please choose a file smaller than 10 MB.");
+          return;
+        }
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        let binary = "";
+        const chunkSize = 0x8000;
+        for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+          binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length)));
+        }
+        const extractedText = await invoke<string>("extract_student_pdf_text", { pdfBase64: btoa(binary) });
+        const pdfRows = parseStudentPdfText(extractedText, classes);
+        if (pdfRows.length === 0) {
+          setStudentImportError("Text was extracted, but student rows could not be identified reliably. Please use CSV for this PDF or adjust its table to include one student per row with name, gender, section, class, and any available details.");
+          return;
+        }
+        matrix = [
+          ["Student Name", "Gender", "Section", "Class", "Date of Birth (YYYY-MM-DD)", "Existing Admission Number (optional)", "Guardian Phone (optional)"],
+          ...pdfRows,
+        ];
+      } else {
+        matrix = parseCsv(await file.text());
+      }
+      if (matrix.length < 2) {
+        setStudentImportError("The CSV must contain a header row and at least one student.");
+        return;
+      }
+      const headers = matrix[0].map(normalizeColumn);
+      const indexOf = (...names: string[]) => headers.findIndex((header) => names.includes(header));
+      const nameIndex = indexOf("studentname", "name", "fullname");
+      const genderIndex = indexOf("gender");
+      const sectionIndex = indexOf("section", "schoolsection");
+      const classIndex = indexOf("class", "classname");
+      const dobIndex = indexOf("dateofbirthyyyymmdd", "dateofbirth", "dob");
+      const admissionIndex = indexOf("existingadmissionnumberoptional", "admissionnumber", "existingadmissionnumber");
+      const phoneIndex = indexOf("guardianphoneoptional", "guardianphone", "parentphone");
+      if (nameIndex < 0 || genderIndex < 0 || sectionIndex < 0 || classIndex < 0) {
+        setStudentImportError("Required columns not found. Include Student Name, Gender, Section, and Class in the CSV header.");
+        return;
+      }
+      const read = (row: string[], index: number) => index >= 0 ? (row[index] ?? "").trim() : "";
+      const seenInFile = new Set<string>();
+      const seenAdmissionNumbers = new Set<string>();
+      const preview = matrix.slice(1).map((row, offset): StudentImportPreviewRow => {
+        const fullName = read(row, nameIndex);
+        const names = splitStudentName(fullName);
+        const genderRaw = read(row, genderIndex);
+        const gender = /^female$/i.test(genderRaw) ? "Female" : /^male$/i.test(genderRaw) ? "Male" : genderRaw;
+        const sectionName = read(row, sectionIndex);
+        const sectionNorm = normalizeColumn(sectionName);
+        const expectedSectionCode = ({
+          nursery: "NUR",
+          primary: "PRI",
+          juniorsecondary: "JSS",
+          jss: "JSS",
+          seniorsecondary: "SS",
+          ss: "SS",
+          sss: "SS",
+        } as Record<string, string>)[sectionNorm] ?? "";
+        const className = read(row, classIndex);
+        const classRecord = classes.find((item) => item.name.trim().toLowerCase() === className.toLowerCase());
+        const errors: string[] = [];
+        if (!names.firstName || !names.lastName) errors.push("Enter a full name with at least two parts");
+        if (gender !== "Male" && gender !== "Female") errors.push("Gender must be Male or Female");
+        if (!sectionName) errors.push("Section is missing");
+        if (!className) errors.push("Class is missing");
+        if (className && !classRecord) errors.push("Class is not configured in Exam Officer");
+        if (classRecord && !classRecord.sectionCode) errors.push("Assign this class to a school section first");
+        if (classRecord && expectedSectionCode && classRecord.sectionCode?.toUpperCase() !== expectedSectionCode) errors.push("Section does not match the selected class");
+        if (sectionName && !expectedSectionCode) errors.push("Unrecognised section; use Nursery, Primary, Junior Secondary, or Senior Secondary");
+        const dob = read(row, dobIndex);
+        if (dob && !/^\d{4}-\d{2}-\d{2}$/.test(dob)) errors.push("Date of birth must use YYYY-MM-DD");
+        const key = `${names.firstName.toLowerCase()}|${names.middleName.toLowerCase()}|${names.lastName.toLowerCase()}|${classRecord?.id ?? className.toLowerCase()}`;
+        const admissionNumber = read(row, admissionIndex);
+        const existingDuplicate = Boolean(classRecord && students.some((item) =>
+          item.classId === classRecord.id &&
+          item.firstName.trim().toLowerCase() === names.firstName.toLowerCase() &&
+          item.middleName.trim().toLowerCase() === names.middleName.toLowerCase() &&
+          item.lastName.trim().toLowerCase() === names.lastName.toLowerCase()
+        ));
+        const repeatedInFile = seenInFile.has(key);
+        const repeatedAdmissionNumber = Boolean(admissionNumber && seenAdmissionNumbers.has(admissionNumber.toLowerCase()));
+        seenInFile.add(key);
+        if (admissionNumber) seenAdmissionNumbers.add(admissionNumber.toLowerCase());
+        const duplicate = existingDuplicate || repeatedInFile || repeatedAdmissionNumber;
+        if (existingDuplicate) errors.push("Student already exists in this class");
+        else if (repeatedInFile) errors.push("Duplicate row in this file");
+        if (repeatedAdmissionNumber) errors.push("Admission number is repeated in this file");
+        return {
+          rowNumber: offset + 2,
+          ...names,
+          gender,
+          sectionName,
+          sectionCode: classRecord?.sectionCode ?? expectedSectionCode,
+          className,
+          classId: classRecord?.id ?? null,
+          dateOfBirth: dob,
+          admissionNumber,
+          guardianPhone: read(row, phoneIndex),
+          errors,
+          duplicate,
+        };
+      });
+      setStudentImportRows(preview);
+      if (preview.length === 0) setStudentImportError("No student rows found in this CSV.");
+    } catch (error) {
+      setStudentImportError(`Could not read CSV file: ${String(error)}`);
+    }
+  };
+
+  const confirmStudentImport = async () => {
+    const validRows = studentImportRows.filter((row) => row.errors.length === 0 && row.classId !== null);
+    if (!validRows.length) {
+      setStudentImportError("There are no valid, non-duplicate students to import.");
+      return;
+    }
+    const confirmed = window.confirm(`Import ${validRows.length} new student(s)? Existing and duplicate rows will not be imported. No records will be changed for students already registered.`);
+    if (!confirmed) return;
+    setStudentImportBusy(true);
+    setStudentImportError("");
+    setStudentImportMessage("");
+    try {
+      const result = await invoke<{ createdCount: number; studentIds: string[] }>("import_students", {
+        schoolName,
+        idYear: (session.match(/\d{4}/)?.[0] ?? String(new Date().getFullYear())),
+        students: validRows.map((row) => ({
+          firstName: row.firstName,
+          middleName: row.middleName || null,
+          lastName: row.lastName,
+          gender: row.gender,
+          classId: row.classId,
+          sectionCode: row.sectionCode,
+          admissionDate: "",
+          admissionNumber: row.admissionNumber || null,
+          dateOfBirth: row.dateOfBirth || null,
+          guardianPhone: row.guardianPhone || null,
+        })),
+      });
+      await loadStudents();
+      setStudentImportMessage(`Successfully imported ${result.createdCount} student(s). IDs were generated automatically. ${studentImportRows.length - validRows.length} duplicate or invalid row(s) were skipped.`);
+      setStudentImportRows([]);
+      setStudentImportFileName("");
+    } catch (error) {
+      setStudentImportError(String(error));
+    } finally {
+      setStudentImportBusy(false);
     }
   };
 
@@ -487,6 +901,480 @@ function App() {
       active = false;
     };
   }, [page]);
+
+  useEffect(() => {
+    if (page !== "Marks Entry") return;
+    let active = true;
+    async function loadMarkSetup() {
+      setMarkError("");
+      try {
+        const [loadedClasses, loadedSubjects] = await Promise.all([
+          invoke<SchoolClass[]>("get_classes"),
+          invoke<Subject[]>("get_subjects"),
+        ]);
+        if (!active) return;
+        setClasses(loadedClasses);
+        setSubjects(loadedSubjects);
+        setMarkClassId((current) =>
+          current !== "" && loadedClasses.some((item) => item.id === current)
+            ? current
+            : loadedClasses[0]?.id ?? ""
+        );
+        setMarkSubjectId((current) =>
+          current !== "" && loadedSubjects.some((item) => item.id === current)
+            ? current
+            : loadedSubjects[0]?.id ?? ""
+        );
+      } catch (error) {
+        if (active) setMarkError(String(error));
+      }
+    }
+    void loadMarkSetup();
+    return () => { active = false; };
+  }, [page]);
+
+  const loadMarkRows = async () => {
+    setMarkError("");
+    setMarkMessage("");
+    if (markClassId === "" || markSubjectId === "") {
+      setMarkError("Create/select a class and subject before loading marks.");
+      return;
+    }
+    if (!markAssessment.trim()) {
+      setMarkError("Enter an assessment name, such as CA1 or Examination.");
+      return;
+    }
+    setMarkBusy(true);
+    try {
+      const rows = await invoke<MarkEntryRow[]>("get_mark_entries", {
+        classId: markClassId,
+        subjectId: markSubjectId,
+        session: session.trim(),
+        term,
+        assessmentName: markAssessment.trim(),
+      });
+      setMarkRows(rows);
+      const savedMaximum = rows.find((row) => row.maxScore !== null)?.maxScore;
+      if (savedMaximum !== undefined) setMarkMaxScore(String(savedMaximum));
+      setMarkInputs(Object.fromEntries(rows.map((row) => [
+        row.studentId, row.score === null ? "" : String(row.score)
+      ])));
+      if (rows.length === 0) setMarkMessage("No students are registered in this class yet.");
+    } catch (error) {
+      setMarkError(String(error));
+    } finally {
+      setMarkBusy(false);
+    }
+  };
+
+  const previewBulkMarkImport = async (file: File) => {
+    setBulkMarkFileName(file.name);
+    setBulkMarkRows([]);
+    setBulkMarkError("");
+    setBulkMarkMessage("");
+    setBulkMarkAllowOverwrite(false);
+    if (!file.name.toLowerCase().endsWith(".csv")) {
+      setBulkMarkError("Please choose a CSV file. Save Excel workbooks as CSV UTF-8 first.");
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setBulkMarkError("The marks CSV must be smaller than 5 MB.");
+      return;
+    }
+    try {
+      const matrix = parseCsv(await file.text());
+      if (matrix.length < 2) {
+        setBulkMarkError("The CSV must contain a header row and at least one marks record.");
+        return;
+      }
+      const headers = matrix[0].map(normalizeColumn);
+      const indexOf = (...names: string[]) => headers.findIndex((header) => names.includes(header));
+      const studentCodeIndex = indexOf("studentid", "studentcode", "permanentstudentid");
+      const classIndex = indexOf("classname", "class");
+      const subjectIndex = indexOf("subject", "subjectname");
+      const sessionIndex = indexOf("academicsession", "session");
+      const termIndex = indexOf("term", "academicterm");
+      const assessmentIndex = indexOf("assessment", "assessmentname", "assessmentlabel");
+      const scoreIndex = indexOf("score", "mark", "marks");
+      const maxScoreIndex = indexOf("maxscore", "maxmark", "maximumscore", "maximummark");
+      const nameIndex = indexOf("studentname", "name", "fullname");
+      const required = [
+        ["Student ID", studentCodeIndex], ["Class", classIndex], ["Subject", subjectIndex],
+        ["Academic session", sessionIndex], ["Term", termIndex], ["Assessment", assessmentIndex],
+        ["Score", scoreIndex], ["Maximum mark", maxScoreIndex],
+      ] as const;
+      const missing = required.filter(([, index]) => index < 0).map(([label]) => label);
+      if (missing.length) {
+        setBulkMarkError(`Missing required CSV columns: ${missing.join(", ")}.`);
+        return;
+      }
+      const [loadedStudents, loadedClasses, loadedSubjects] = await Promise.all([
+        invoke<Student[]>("get_students"),
+        invoke<SchoolClass[]>("get_classes"),
+        invoke<Subject[]>("get_subjects"),
+      ]);
+      const read = (row: string[], index: number) => (row[index] ?? "").trim();
+      const classSubjectsCache = new Map<number, Set<number>>();
+      const existingCache = new Map<string, Map<string, { score: number; maxScore: number }>>();
+      const seen = new Set<string>();
+      const preview: BulkMarkImportRow[] = [];
+      for (const [offset, row] of matrix.slice(1).entries()) {
+        const studentCode = read(row, studentCodeIndex);
+        const className = read(row, classIndex);
+        const subjectName = read(row, subjectIndex);
+        const rowSession = read(row, sessionIndex);
+        const rowTerm = read(row, termIndex);
+        const assessmentName = read(row, assessmentIndex);
+        const scoreText = read(row, scoreIndex);
+        const maxText = read(row, maxScoreIndex);
+        const score = scoreText === "" ? null : Number(scoreText);
+        const maxScore = maxText === "" ? null : Number(maxText);
+        const student = loadedStudents.find((item) => item.studentId.trim().toLowerCase() === studentCode.toLowerCase());
+        const classItem = loadedClasses.find((item) => normalizeColumn(item.name) === normalizeColumn(className));
+        const subject = loadedSubjects.find((item) => normalizeColumn(item.name) === normalizeColumn(subjectName));
+        const errors: string[] = [];
+        if (!studentCode) errors.push("Missing student ID");
+        if (!student) errors.push("Student ID not found");
+        if (!className) errors.push("Missing class");
+        if (!classItem) errors.push("Class not found");
+        if (student && classItem && student.classId !== classItem.id) errors.push("Student does not belong to this class");
+        if (!subjectName) errors.push("Missing subject");
+        if (!subject) errors.push("Subject not found");
+        if (!rowSession || rowSession !== session.trim()) errors.push(`Session must match School Setup (${session})`);
+        if (!rowTerm || rowTerm !== term) errors.push(`Term must match School Setup (${term})`);
+        if (!assessmentName) errors.push("Missing assessment label");
+        if (score === null || maxScore === null || !Number.isFinite(score) || !Number.isFinite(maxScore) || maxScore <= 0 || score < 0 || score > maxScore) {
+          errors.push("Score must be between 0 and a positive maximum mark");
+        }
+        let existing = false;
+        let existingScore: number | null = null;
+        if (student && classItem && subject) {
+          if (!classSubjectsCache.has(classItem.id)) {
+            const assigned = await invoke<ClassSubject[]>("get_class_subjects", { classId: classItem.id });
+            classSubjectsCache.set(classItem.id, new Set(assigned.map((item) => item.subjectId)));
+          }
+          if (!classSubjectsCache.get(classItem.id)?.has(subject.id)) errors.push("Subject is not assigned to this class");
+          const cacheKey = [classItem.id, subject.id, rowSession, rowTerm, assessmentName].join("|");
+          if (!existingCache.has(cacheKey)) {
+            const records = await invoke<MarkEntryRow[]>("get_mark_entries", {
+              classId: classItem.id, subjectId: subject.id, session: rowSession, term: rowTerm, assessmentName,
+            });
+            existingCache.set(cacheKey, new Map(records.filter((item) => item.score !== null).map((item) => [
+              item.studentCode.toLowerCase(), { score: item.score as number, maxScore: item.maxScore as number },
+            ])));
+          }
+          const saved = existingCache.get(cacheKey)?.get(studentCode.toLowerCase());
+          if (saved) { existing = true; existingScore = saved.score; }
+        }
+        const duplicateKey = [studentCode.toLowerCase(), normalizeColumn(subjectName), rowSession, rowTerm, assessmentName.toLowerCase()].join("|");
+        if (seen.has(duplicateKey)) errors.push("Duplicate student/subject/assessment row in this file");
+        seen.add(duplicateKey);
+        preview.push({
+          rowNumber: offset + 2, studentId: student?.id ?? null, studentCode,
+          studentName: student ? [student.firstName, student.middleName, student.lastName].filter(Boolean).join(" ") : read(row, nameIndex),
+          className, subjectName, subjectId: subject?.id ?? null, session: rowSession, term: rowTerm,
+          assessmentName, score, maxScore, existing, existingScore, errors,
+        });
+      }
+      setBulkMarkRows(preview);
+      if (preview.length === 0) setBulkMarkError("No marks records were found in the CSV.");
+      else if (preview.every((item) => item.errors.length === 0)) setBulkMarkMessage(`Preview ready: ${preview.length} marks records checked. Nothing has been saved yet.`);
+    } catch (error) {
+      setBulkMarkError(String(error));
+    }
+  };
+
+  const importBulkMarks = async () => {
+    setBulkMarkError("");
+    setBulkMarkMessage("");
+    const invalid = bulkMarkRows.filter((row) => row.errors.length > 0);
+    if (bulkMarkRows.length === 0) {
+      setBulkMarkError("Choose and preview a marks CSV first.");
+      return;
+    }
+    if (invalid.length > 0) {
+      setBulkMarkError(`Fix the ${invalid.length} invalid row(s) before importing. No marks were saved.`);
+      return;
+    }
+    const overwriteCount = bulkMarkRows.filter((row) => row.existing).length;
+    if (overwriteCount > 0 && !bulkMarkAllowOverwrite) {
+      setBulkMarkError(`The file would update ${overwriteCount} existing mark(s). Tick the overwrite confirmation before importing.`);
+      return;
+    }
+    setBulkMarkBusy(true);
+    try {
+      const imported = await invoke<number>("import_mark_entries", {
+        entries: bulkMarkRows.map((row) => ({
+          studentId: row.studentId,
+          subjectId: row.subjectId,
+          session: row.session,
+          term: row.term,
+          assessmentName: row.assessmentName,
+          score: row.score,
+          maxScore: row.maxScore,
+        })),
+      });
+      setBulkMarkMessage(`Successfully imported ${imported} mark record(s). Existing marks were updated only because overwrite was confirmed.`);
+      setBulkMarkRows([]);
+      setBulkMarkFileName("");
+      setBulkMarkAllowOverwrite(false);
+      if (markClassId !== "") await loadMarkRows();
+    } catch (error) {
+      setBulkMarkError(String(error));
+    } finally {
+      setBulkMarkBusy(false);
+    }
+  };
+
+  const saveStudentMark = async (row: MarkEntryRow) => {
+    setMarkError("");
+    setMarkMessage("");
+    const rawScore = markInputs[row.studentId]?.trim() ?? "";
+    const score = Number(rawScore);
+    const maxScore = Number(markMaxScore);
+    if (rawScore === "" || !Number.isFinite(score) || !Number.isFinite(maxScore) ||
+        maxScore <= 0 || score < 0 || score > maxScore) {
+      setMarkError(`Enter a valid score for ${row.studentCode} between 0 and the maximum mark.`);
+      return;
+    }
+    setMarkBusy(true);
+    try {
+      await invoke("save_mark_entry", {
+        studentId: row.studentId,
+        subjectId: markSubjectId,
+        session: session.trim(),
+        term,
+        assessmentName: markAssessment.trim(),
+        score,
+        maxScore,
+      });
+      setMarkRows((current) => current.map((item) =>
+        item.studentId === row.studentId ? { ...item, score, maxScore } : item
+      ));
+      setMarkMessage(`Saved mark for ${row.studentCode}.`);
+    } catch (error) {
+      setMarkError(String(error));
+    } finally {
+      setMarkBusy(false);
+    }
+  };
+
+  const loadReportCard = async () => {
+    setReportError("");
+    setReportMessage("");
+    if (reportClassId === "" || reportStudentId === "") {
+      setReportError("Select a class and a student first.");
+      return;
+    }
+    setReportBusy(true);
+    try {
+      const rows = await invoke<ClassResultRow[]>("get_class_results", {
+        classId: reportClassId,
+        session: session.trim(),
+        term,
+      });
+      setReportRows(rows);
+      setReportMessage("Report card loaded from saved marks for the selected academic period.");
+    } catch (error) {
+      setReportError(String(error));
+      setReportRows([]);
+    } finally {
+      setReportBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (page !== "Report Cards") return;
+    let active = true;
+    async function loadReportSetup() {
+      setReportError("");
+      try {
+        const [loadedClasses, loadedStudents] = await Promise.all([
+          invoke<SchoolClass[]>("get_classes"),
+          invoke<Student[]>("get_students"),
+        ]);
+        if (!active) return;
+        setClasses(loadedClasses);
+        setReportStudents(loadedStudents);
+        const nextClassId = loadedClasses[0]?.id ?? "";
+        setReportClassId((current) => current !== "" && loadedClasses.some((item) => item.id === current) ? current : nextClassId);
+        setReportStudentId((current) => current !== "" && loadedStudents.some((item) => item.id === current) ? current : "");
+        setReportRows([]);
+      } catch (error) {
+        if (active) setReportError(String(error));
+      }
+    }
+    void loadReportSetup();
+    return () => { active = false; };
+  }, [page]);
+
+  useEffect(() => {
+    if (reportClassId === "") {
+      setReportStudentId("");
+      return;
+    }
+    const studentsInClass = reportStudents.filter((student) => student.classId === reportClassId);
+    if (!studentsInClass.some((student) => student.id === reportStudentId)) {
+      setReportStudentId(studentsInClass[0]?.id ?? "");
+      setReportRows([]);
+    }
+  }, [reportClassId, reportStudents, reportStudentId]);
+
+  const loadGradeSettings = async () => {
+    setGradeSettingsError("");
+    setGradeSettingsMessage("");
+    try { setGradeRules(await invoke<GradeRemarkRule[]>("get_grade_remark_rules")); }
+    catch (error) { setGradeSettingsError(String(error)); }
+  };
+
+  const saveGradeSettings = async () => {
+    setGradeSettingsError("");
+    setGradeSettingsMessage("");
+    if (gradeRules.length === 0 || gradeRules.length > 20) {
+      setGradeSettingsError("Keep between 1 and 20 grading rules.");
+      return;
+    }
+    const thresholds = gradeRules.map((rule) => Number(rule.minimumScore));
+    if (thresholds.some((score) => !Number.isFinite(score) || score < 0 || score > 100)) {
+      setGradeSettingsError("Every minimum percentage must be between 0 and 100.");
+      return;
+    }
+    if (new Set(thresholds.map((score) => Math.round(score * 100))).size !== thresholds.length) {
+      setGradeSettingsError("Each grading rule must have a different minimum percentage.");
+      return;
+    }
+    if (!thresholds.includes(0)) {
+      setGradeSettingsError("Keep a 0% rule so every possible result receives a grade and remarks.");
+      return;
+    }
+    if (gradeRules.some((rule) => !rule.gradeLabel.trim())) {
+      setGradeSettingsError("Enter a grade label for every grading rule.");
+      return;
+    }
+    setGradeSettingsBusy(true);
+    try {
+      const orderedRules = [...gradeRules].sort((a, b) => Number(b.minimumScore) - Number(a.minimumScore));
+      await invoke("save_grade_remark_rules", { rules: orderedRules });
+      setGradeRules(orderedRules);
+      setGradeSettingsMessage("Grading and automatic remark rules saved.");
+    } catch (error) {
+      setGradeSettingsError(String(error));
+    } finally {
+      setGradeSettingsBusy(false);
+    }
+  };
+
+  const loadPositionRemarkSettings = async () => {
+    setPositionSettingsError("");
+    setPositionSettingsMessage("");
+    try {
+      setPositionRemarkRules(await invoke<PositionRemarkRule[]>("get_position_remark_rules"));
+    } catch (error) {
+      setPositionSettingsError(String(error));
+    }
+  };
+
+  const savePositionRemarkSettings = async () => {
+    setPositionSettingsBusy(true);
+    setPositionSettingsError("");
+    setPositionSettingsMessage("");
+    try {
+      await invoke("save_position_remark_rules", { rules: positionRemarkRules });
+      setPositionSettingsMessage("Position-based remarks saved.");
+    } catch (error) {
+      setPositionSettingsError(String(error));
+    } finally {
+      setPositionSettingsBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (page === "Settings" || page === "Report Cards") {
+      void loadGradeSettings();
+      void loadPositionRemarkSettings();
+    }
+  }, [page]);
+
+  const loadClassResults = async () => {
+    setResultError("");
+    setResultMessage("");
+    if (resultClassId === "") {
+      setResultError("Select a class before generating results.");
+      return;
+    }
+    setResultBusy(true);
+    try {
+      const rows = await invoke<ClassResultRow[]>("get_class_results", {
+        classId: resultClassId,
+        session: session.trim(),
+        term,
+      });
+      setResultRows(rows);
+      if (rows.length === 0) {
+        setResultMessage("No students are registered in this class yet.");
+      } else if (!rows.some((row) => row.assessmentCount > 0)) {
+        setResultMessage("Students are listed, but no marks have been saved for this period yet.");
+      } else {
+        setResultMessage("Results calculated from saved marks for the selected academic period.");
+      }
+    } catch (error) {
+      setResultError(String(error));
+      setResultRows([]);
+    } finally {
+      setResultBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (page !== "Results & Reports") return;
+    let active = true;
+    async function loadResultSetup() {
+      setResultError("");
+      try {
+        const loadedClasses = await invoke<SchoolClass[]>("get_classes");
+        if (!active) return;
+        setClasses(loadedClasses);
+        setResultClassId((current) =>
+          current !== "" && loadedClasses.some((item) => item.id === current)
+            ? current
+            : loadedClasses[0]?.id ?? ""
+        );
+      } catch (error) {
+        if (active) setResultError(String(error));
+      }
+    }
+    void loadResultSetup();
+    return () => { active = false; };
+  }, [page]);
+
+  useEffect(() => {
+    if (page !== "Marks Entry" || markClassId === "") {
+      setMarkClassSubjects([]);
+      return;
+    }
+    let active = true;
+    async function loadAssignedSubjects() {
+      try {
+        const assigned = await invoke<ClassSubject[]>("get_class_subjects", { classId: markClassId });
+        if (!active) return;
+        setMarkClassSubjects(assigned);
+        setMarkSubjectId((current) =>
+          current !== "" && assigned.some((item) => item.subjectId === current)
+            ? current
+            : assigned[0]?.subjectId ?? ""
+        );
+        setMarkRows([]);
+      } catch (error) {
+        if (active) {
+          setMarkClassSubjects([]);
+          setMarkSubjectId("");
+          setMarkError(String(error));
+        }
+      }
+    }
+    void loadAssignedSubjects();
+    return () => { active = false; };
+  }, [page, markClassId]);
 
   useEffect(() => {
     if (page !== "Students") return;
@@ -1314,6 +2202,59 @@ function App() {
               <section className="panel academic-panel">
                 <div className="section-heading">
                   <div>
+                    <h2>Import students from CSV or PDF</h2>
+                    <p>Upload one combined CSV or a text-based PDF student list for Nursery, Primary, Junior Secondary, and Senior Secondary. Review the preview before approving any changes. Scanned PDFs are not supported yet.</p>
+                  </div>
+                </div>
+                {studentImportError && <p role="alert">{studentImportError}</p>}
+                {studentImportMessage && <p role="status">{studentImportMessage}</p>}
+                <label className="field">
+                  <span>Student list (.csv or .pdf)</span>
+                  <input type="file" accept=".csv,.pdf,text/csv,application/pdf" disabled={studentImportBusy} onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (file) void previewStudentImport(file);
+                    event.currentTarget.value = "";
+                  }} />
+                </label>
+                {studentImportFileName && <p className="muted-copy">File: {studentImportFileName}</p>}
+                <p className="muted-copy">Required CSV columns: Student Name, Gender, Section, Class. Optional columns: Date of Birth (YYYY-MM-DD), Existing Admission Number, Guardian Phone. Text-based PDFs are read automatically where the student rows can be identified; scanned PDFs need OCR support, which is not included yet. Review the preview carefully before approving.</p>
+                {studentImportRows.length > 0 && (
+                  <>
+                    <div className="section-heading">
+                      <div>
+                        <h3>Import preview</h3>
+                        <p>{studentImportRows.filter((row) => row.errors.length === 0).length} ready · {studentImportRows.filter((row) => row.duplicate).length} duplicate(s) · {studentImportRows.filter((row) => row.errors.some((error) => !error.includes("already exists") && !error.includes("Duplicate row"))).length} row(s) with errors</p>
+                      </div>
+                    </div>
+                    <div className="table-scroll">
+                      <table className="data-table">
+                        <thead><tr><th>Row</th><th>Student</th><th>Section</th><th>Class</th><th>Status</th></tr></thead>
+                        <tbody>
+                          {studentImportRows.map((row) => (
+                            <tr key={row.rowNumber}>
+                              <td>{row.rowNumber}</td>
+                              <td>{[row.firstName, row.middleName, row.lastName].filter(Boolean).join(" ")}</td>
+                              <td>{row.sectionName}</td>
+                              <td>{row.className}</td>
+                              <td>{row.errors.length === 0 ? "Ready to import" : row.errors.join("; ")}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="academic-item-actions">
+                      <button className="primary-button" type="button" onClick={() => void confirmStudentImport()} disabled={studentImportBusy || studentImportRows.every((row) => row.errors.length > 0)}>
+                        {studentImportBusy ? "Importing..." : `Approve and import ${studentImportRows.filter((row) => row.errors.length === 0).length} student(s)`}
+                      </button>
+                      <button className="secondary-button" type="button" disabled={studentImportBusy} onClick={() => { setStudentImportRows([]); setStudentImportFileName(""); setStudentImportError(""); setStudentImportMessage(""); }}>Cancel preview</button>
+                    </div>
+                  </>
+                )}
+              </section>
+
+              <section className="panel academic-panel">
+                <div className="section-heading">
+                  <div>
                     <h2>Student register</h2>
                     <p>Search registered students by ID, name, or class.</p>
                   </div>
@@ -1361,29 +2302,262 @@ function App() {
               </section>
             </section>
           )}
-          {page !== "Dashboard" && page !== "School Setup" && page !== "Classes & Subjects" && page !== "Students" && (
+          {page === "Marks Entry" && (
             <section className="inner-page">
-              <div className="eyebrow">
-                {page === "Settings" ? "SYSTEM CONFIGURATION" : "EXAMINATION WORKSPACE"}
-              </div>
-              <h1>{page}</h1>
-              <p className="page-subtitle">
-                                {page === "Marks Entry" && "Record student scores with their correct maximum marks."}
-                {page === "Results & Reports" && "Compile results and prepare printable report cards."}
-                {page === "Settings" && "Configure grading rules and application preferences."}
-              </p>
-              <div className="panel coming-panel">
-                <div className="coming-icon">
-                  {page === "Marks Entry" ? "✎" : page === "Results & Reports" ? "▤" : "⚙"}
+              <div className="eyebrow">EXAMINATION WORKSPACE</div>
+              <h1>Marks Entry</h1>
+              <p className="page-subtitle">Enter marks against each student's permanent record. Scores are saved locally on this computer.</p>
+              {markError && <div className="save-message error-message" role="alert">{markError}</div>}
+              {markMessage && <div className="save-message" role="status">{markMessage}</div>}
+              <section className="panel academic-panel">
+                <div className="section-heading"><div><h2>Upload marks from CSV</h2><p>Import marks for multiple students and subjects in one file. Review every row before saving.</p></div></div>
+                {bulkMarkError && <div className="save-message error-message" role="alert">{bulkMarkError}</div>}
+                {bulkMarkMessage && <div className="save-message" role="status">{bulkMarkMessage}</div>}
+                <label className="field"><span>Marks CSV file</span>
+                  <input type="file" accept=".csv,text/csv" disabled={bulkMarkBusy} onChange={(event) => { const file = event.target.files?.[0]; if (file) void previewBulkMarkImport(file); }} />
+                </label>
+                {bulkMarkFileName && <p className="page-subtitle">Selected file: <strong>{bulkMarkFileName}</strong>. CSV must include Student ID, Class, Subject, Academic Session, Term, Assessment, Score, and Maximum Mark.</p>}
+                {bulkMarkRows.length > 0 && (
+                  <div className="academic-list">
+                    <div className="section-heading"><div><h3>Import preview</h3><p>{bulkMarkRows.length} record(s) · {bulkMarkRows.filter((row) => row.errors.length === 0).length} valid · {bulkMarkRows.filter((row) => row.errors.length > 0).length} with errors · {bulkMarkRows.filter((row) => row.existing).length} existing mark(s)</p></div></div>
+                    <div style={{ overflowX: "auto" }}>
+                      <table className="data-table">
+                        <thead><tr><th>CSV row</th><th>Student ID</th><th>Student</th><th>Class</th><th>Subject</th><th>Score</th><th>Status</th></tr></thead>
+                        <tbody>{bulkMarkRows.map((row) => <tr key={row.rowNumber}>
+                          <td>{row.rowNumber}</td><td>{row.studentCode}</td><td>{row.studentName}</td><td>{row.className}</td><td>{row.subjectName}</td>
+                          <td>{row.score ?? "—"} / {row.maxScore ?? "—"}</td>
+                          <td>{row.errors.length ? row.errors.join("; ") : row.existing ? `Will update existing ${row.existingScore}` : "Ready to import"}</td>
+                        </tr>)}</tbody>
+                      </table>
+                    </div>
+                    {bulkMarkRows.some((row) => row.existing) && <label className="field" style={{ marginTop: "12px" }}>
+                      <span><input type="checkbox" checked={bulkMarkAllowOverwrite} onChange={(event) => setBulkMarkAllowOverwrite(event.target.checked)} disabled={bulkMarkBusy} /> I explicitly approve updating existing marks shown in this preview.</span>
+                    </label>}
+                    <button className="primary-button" type="button" onClick={() => void importBulkMarks()} disabled={bulkMarkBusy || bulkMarkRows.some((row) => row.errors.length > 0) || (bulkMarkRows.some((row) => row.existing) && !bulkMarkAllowOverwrite)}>
+                      {bulkMarkBusy ? "Importing marks..." : `Import ${bulkMarkRows.length} mark records`}
+                    </button>
+                  </div>
+                )}
+              </section>
+              <section className="panel academic-panel">
+                <div className="section-heading"><div><h2>Assessment details</h2><p>Choose the class, subject and assessment being marked.</p></div></div>
+                <div className="assignment-form">
+                  <label className="field"><span>Class *</span>
+                    <select value={markClassId} onChange={(event) => { setMarkClassId(event.target.value ? Number(event.target.value) : ""); setMarkRows([]); }} disabled={markBusy}>
+                      <option value="">Select class</option>{classes.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                    </select>
+                  </label>
+                  <label className="field"><span>Subject *</span>
+                    <select value={markSubjectId} onChange={(event) => { setMarkSubjectId(event.target.value ? Number(event.target.value) : ""); setMarkRows([]); }} disabled={markBusy}>
+                      <option value="">Select subject</option>{markClassSubjects.map((item) => <option key={item.subjectId} value={item.subjectId}>{item.subjectName}</option>)}
+                    </select>
+                  </label>
+                  <label className="field"><span>Assessment label *</span>
+                    <input value={markAssessment} onChange={(event) => { setMarkAssessment(event.target.value); setMarkRows([]); }} maxLength={60} placeholder="e.g. CA1 or Examination" disabled={markBusy} />
+                  </label>
+                  <label className="field"><span>Maximum mark *</span>
+                    <input type="number" min="1" step="any" value={markMaxScore} onChange={(event) => setMarkMaxScore(event.target.value)} disabled={markBusy} />
+                  </label>
                 </div>
-                <h2>{page} workspace</h2>
-                <p>This section will be implemented in the next stages.</p>
-                <button className="primary-button" onClick={() => choosePage("School Setup")} type="button">
-                  Configure school first <span>→</span>
+                <p className="page-subtitle">Current period: <strong>{session}</strong> · <strong>{term}</strong>. Change these in School Setup before loading marks for another period.</p>
+                <button className="primary-button" type="button" onClick={() => void loadMarkRows()} disabled={markBusy || markClassId === "" || markSubjectId === ""}>
+                  {markBusy ? "Please wait..." : "Load class register"}
                 </button>
-              </div>
+              </section>
+              {markRows.length > 0 && (
+                <section className="panel academic-panel">
+                  <div className="section-heading"><div><h2>Student marks</h2><p>{markRows.length} student(s). Save each score to update that student's record.</p></div><span className="academic-count">{markRows.filter((row) => row.score !== null).length}/{markRows.length} saved</span></div>
+                  <div className="academic-list">
+                    {markRows.map((row) => (
+                      <div className="academic-list-item" key={row.studentId}>
+                        <div><strong>{row.studentName}</strong><p>{row.studentCode}{row.score !== null && row.maxScore !== null ? ` · Saved: ${row.score}/${row.maxScore}` : " · No mark saved yet"}</p></div>
+                        <div className="academic-item-actions">
+                          <input aria-label={`Score for ${row.studentCode}`} type="number" min="0" max={markMaxScore} step="any" value={markInputs[row.studentId] ?? ""} onChange={(event) => setMarkInputs((current) => ({ ...current, [row.studentId]: event.target.value }))} placeholder="Score" disabled={markBusy} style={{ width: "100px" }} />
+                          <button className="secondary-button compact-button" type="button" onClick={() => void saveStudentMark(row)} disabled={markBusy}>Save mark</button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
             </section>
           )}
+          {page === "Results & Reports" && (
+            <section className="inner-page">
+              <div className="eyebrow">EXAMINATION WORKSPACE</div>
+              <h1>Results & Reports</h1>
+              <p className="page-subtitle">Calculate class results from saved marks for the selected academic session and term.</p>
+              {resultError && <div className="save-message error-message" role="alert">{resultError}</div>}
+              {resultMessage && <div className="save-message" role="status">{resultMessage}</div>}
+              <section className="panel academic-panel">
+                <div className="section-heading"><div><h2>Class results</h2><p>Choose a class to calculate subject totals, averages and positions.</p></div></div>
+                <div className="assignment-form">
+                  <label className="field"><span>Class *</span>
+                    <select value={resultClassId} onChange={(event) => { setResultClassId(event.target.value ? Number(event.target.value) : ""); setResultRows([]); setResultMessage(""); }} disabled={resultBusy}>
+                      <option value="">Select class</option>{classes.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                    </select>
+                  </label>
+                  <div className="field"><span>Academic session</span><strong>{session}</strong></div>
+                  <div className="field"><span>Term</span><strong>{term}</strong></div>
+                </div>
+                <button className="primary-button" type="button" onClick={() => void loadClassResults()} disabled={resultBusy || resultClassId === ""}>
+                  {resultBusy ? "Calculating..." : "Generate class results"}
+                </button>
+              </section>
+              {resultRows.length > 0 && (
+                <section className="panel academic-panel">
+                  <div className="section-heading"><div><h2>Class ranking</h2><p>Average is calculated from each student's subjects that have saved marks. Each subject has equal weight.</p></div><span className="academic-count">{summarizeClassResults(resultRows).length} students</span></div>
+                  <div className="academic-list">
+                    {summarizeClassResults(resultRows).map((student) => (
+                      <div className="academic-list-item" key={student.studentId} style={{ alignItems: "flex-start" }}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <strong>{student.position}. {student.studentName}</strong>
+                          <p>{student.studentCode} · {student.average === null ? "No marks recorded" : `Average: ${student.average.toFixed(2)}%`}</p>
+                          {student.subjects.length > 0 && (
+                            <div style={{ display: "grid", gridTemplateColumns: "minmax(110px, 1fr) auto auto", gap: "6px 14px", marginTop: "10px", fontSize: "0.9rem" }}>
+                              {student.subjects.map((subject) => (
+                                <Fragment key={subject.subjectId}>
+                                  <span>{subject.subjectName}</span>
+                                  <span>{subject.assessmentCount > 0 ? `${Number(subject.scoreTotal.toFixed(2))}/${Number(subject.maxTotal.toFixed(2))}` : "—"}</span>
+                                  <span>{subject.assessmentCount > 0 && subject.maxTotal > 0 ? `${((subject.scoreTotal / subject.maxTotal) * 100).toFixed(1)}%` : "—"}</span>
+                                </Fragment>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                        <div className="academic-item-actions"><span className="academic-count">Position {student.position}</span></div>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="page-subtitle">Tied averages share the same competition rank (for example, 1, 2, 2, 4). Students without marks appear after students with results. Individual report cards use the grading and remark rules configured in Settings and can be printed or saved as PDF.</p>
+                </section>
+              )}
+            </section>
+          )}
+          {page === "Report Cards" && (
+            <section className="inner-page">
+              <div className="eyebrow">INDIVIDUAL STUDENT REPORT</div>
+              <h1>Report Cards</h1>
+              <p className="page-subtitle">Prepare an individual student's report card from saved marks. This page is separate from class results and rankings.</p>
+              {reportError && <div className="save-message error-message" role="alert">{reportError}</div>}
+              {reportMessage && <div className="save-message" role="status">{reportMessage}</div>}
+              <section className="panel academic-panel no-print">
+                <div className="section-heading"><div><h2>Select student</h2><p>Choose the class and student for the report card.</p></div></div>
+                <div className="assignment-form">
+                  <label className="field"><span>Class *</span>
+                    <select value={reportClassId} onChange={(event) => { setReportClassId(event.target.value ? Number(event.target.value) : ""); setReportRows([]); setReportMessage(""); }} disabled={reportBusy}>
+                      <option value="">Select class</option>{classes.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                    </select>
+                  </label>
+                  <label className="field"><span>Student *</span>
+                    <select value={reportStudentId} onChange={(event) => { setReportStudentId(event.target.value ? Number(event.target.value) : ""); setReportRows([]); setReportMessage(""); }} disabled={reportBusy || reportClassId === ""}>
+                      <option value="">Select student</option>{reportStudents.filter((student) => student.classId === reportClassId).map((student) => <option key={student.id} value={student.id}>{student.lastName}, {student.firstName} {student.middleName} ({student.studentId})</option>)}
+                    </select>
+                  </label>
+                  <div className="field"><span>Academic session</span><strong>{session}</strong></div>
+                  <div className="field"><span>Term</span><strong>{term}</strong></div>
+                </div>
+                <button className="primary-button" type="button" onClick={() => void loadReportCard()} disabled={reportBusy || reportClassId === "" || reportStudentId === ""}>
+                  {reportBusy ? "Loading..." : "Load report card"}
+                </button>
+              </section>
+              {reportRows.length > 0 && reportStudentId !== "" && (() => {
+                const summary = summarizeClassResults(reportRows).find((item) => item.studentId === reportStudentId);
+                const student = reportStudents.find((item) => item.id === reportStudentId);
+                if (!summary || !student) return null;
+                const gradedSubjects = summary.subjects.filter((subject) => subject.assessmentCount > 0 && subject.maxTotal > 0);
+                const totalScore = gradedSubjects.reduce((sum, subject) => sum + subject.scoreTotal, 0);
+                const totalMaximum = gradedSubjects.reduce((sum, subject) => sum + subject.maxTotal, 0);
+                return (
+                  <>
+                    <section className="panel academic-panel report-card-paper">
+                      <div style={{ textAlign: "center", borderBottom: "2px solid #222", paddingBottom: "16px", marginBottom: "18px" }}>
+                        <h1 style={{ margin: 0 }}>{schoolName || "YOUR SCHOOL"}</h1>
+                        {schoolAddress && <p>{schoolAddress}</p>}
+                        {(schoolPhone || schoolEmail) && <p>{[schoolPhone, schoolEmail].filter(Boolean).join(" · ")}</p>}
+                        <h2 style={{ marginBottom: 0 }}>STUDENT REPORT CARD</h2>
+                        <p>{session} · {term}</p>
+                      </div>
+                      <div className="assignment-form" style={{ marginBottom: "18px" }}>
+                        <div><strong>Student name</strong><p>{student.firstName} {student.middleName} {student.lastName}</p></div>
+                        <div><strong>Student ID</strong><p>{student.studentId}</p></div>
+                        <div><strong>Class</strong><p>{student.className}</p></div>
+                        <div><strong>Gender</strong><p>{student.gender}</p></div>
+                      </div>
+                      <div style={{ overflowX: "auto" }}>
+                        <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: "18px" }}>
+                          <thead><tr><th style={{ textAlign: "left", borderBottom: "1px solid #777", padding: "8px" }}>Subject</th><th style={{ textAlign: "right", borderBottom: "1px solid #777", padding: "8px" }}>Total score</th><th style={{ textAlign: "right", borderBottom: "1px solid #777", padding: "8px" }}>Maximum</th><th style={{ textAlign: "right", borderBottom: "1px solid #777", padding: "8px" }}>Percentage</th></tr></thead>
+                          <tbody>{summary.subjects.map((subject) => <tr key={subject.subjectId}><td style={{ borderBottom: "1px solid #ddd", padding: "8px" }}>{subject.subjectName}</td><td style={{ textAlign: "right", borderBottom: "1px solid #ddd", padding: "8px" }}>{subject.assessmentCount > 0 ? Number(subject.scoreTotal.toFixed(2)) : "—"}</td><td style={{ textAlign: "right", borderBottom: "1px solid #ddd", padding: "8px" }}>{subject.assessmentCount > 0 ? Number(subject.maxTotal.toFixed(2)) : "—"}</td><td style={{ textAlign: "right", borderBottom: "1px solid #ddd", padding: "8px" }}>{subject.assessmentCount > 0 && subject.maxTotal > 0 ? `${((subject.scoreTotal / subject.maxTotal) * 100).toFixed(1)}%` : "—"}</td></tr>)}</tbody>
+                        </table>
+                      </div>
+                      <div className="assignment-form" style={{ marginBottom: "18px" }}>
+                        <div><strong>Total</strong><p>{Number(totalScore.toFixed(2))} / {Number(totalMaximum.toFixed(2))}</p></div>
+                        <div><strong>Average</strong><p>{summary.average === null ? "—" : `${summary.average.toFixed(2)}%`}</p></div>
+                        <div><strong>Class position</strong><p>{summary.average === null ? "Not ranked" : `${summary.position}`}</p></div>
+                      </div>
+                      <div className="assignment-form" style={{ marginBottom: "18px" }}><div><strong>Grade</strong><p>{summary.average === null ? "—" : ([...gradeRules].sort((a, b) => Number(b.minimumScore) - Number(a.minimumScore)).find((rule) => summary.average! >= Number(rule.minimumScore))?.gradeLabel ?? "—")}</p></div></div>
+                      <div style={{ marginTop: "18px" }}><strong>Class teacher's remark</strong><p style={{ whiteSpace: "pre-wrap", minHeight: "36px" }}>{summary.average === null ? "No result available for remark generation." : ([...gradeRules].sort((a, b) => Number(b.minimumScore) - Number(a.minimumScore)).find((rule) => summary.average! >= Number(rule.minimumScore))?.teacherRemark || "—")}</p></div>
+                      <div style={{ marginTop: "18px" }}><strong>Principal's remark</strong><p style={{ whiteSpace: "pre-wrap", minHeight: "36px" }}>{summary.average === null ? "No result available for remark generation." : ([...gradeRules].sort((a, b) => Number(b.minimumScore) - Number(a.minimumScore)).find((rule) => summary.average! >= Number(rule.minimumScore))?.principalRemark || "—")}</p></div>
+                      <div style={{ marginTop: "18px" }}><strong>Position remark</strong><p style={{ whiteSpace: "pre-wrap", minHeight: "36px" }}>{summary.average === null ? "No position remark available because this student has no recorded results." : (positionRemarkRules.find((rule) => rule.positionKey === (summary.position === 1 ? "first" : summary.position === 2 ? "second" : summary.position === 3 ? "third" : "other"))?.remark || "—")}</p></div>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "28px", marginTop: "36px" }}><div style={{ borderTop: "1px solid #777", paddingTop: "8px" }}>Class teacher's signature</div><div style={{ borderTop: "1px solid #777", paddingTop: "8px" }}>Principal's signature</div></div>
+                    </section>
+                    <section className="panel academic-panel no-print"><div className="academic-item-actions"><button className="secondary-button" type="button" onClick={() => window.print()}>Print / Save as PDF</button></div><p className="page-subtitle">Grades and remarks are generated from the rules in Settings. Use the print dialog's “Save as PDF” option to create a PDF.</p></section>
+                  </>
+                );
+              })()}
+              {reportClassId !== "" && reportStudentId === "" && <p className="empty-state">No students are registered in this class yet.</p>}
+            </section>
+          )}
+          {page === "Settings" && (
+            <section className="inner-page">
+              <div className="eyebrow">SYSTEM CONFIGURATION</div><h1>Settings</h1>
+              <p className="page-subtitle">Configure grade boundaries and automatic class teacher and principal remarks for report cards.</p>
+              {gradeSettingsError && <div className="save-message error-message" role="alert">{gradeSettingsError}</div>}
+              {gradeSettingsMessage && <div className="save-message" role="status">{gradeSettingsMessage}</div>}
+              <section className="panel academic-panel">
+                <div className="section-heading"><div><h2>Grading and automatic remarks</h2><p>Rules are matched from the highest minimum percentage downward. Keep a 0% rule for all remaining results.</p></div></div>
+                {gradeRules.map((rule, index) => (
+                  <div className="panel" key={index} style={{ marginBottom: "14px" }}>
+                    <div className="academic-item-actions" style={{ justifyContent: "flex-end" }}>
+                      <button className="secondary-button" type="button" onClick={() => setGradeRules((current) => current.filter((_, i) => i !== index))} disabled={gradeSettingsBusy || gradeRules.length <= 1}>Remove rule</button>
+                    </div>
+                    <div className="assignment-form">
+                      <label className="field"><span>Minimum percentage</span><input type="number" min="0" max="100" step="1" value={rule.minimumScore} onChange={(event) => setGradeRules((current) => current.map((item, i) => i === index ? { ...item, minimumScore: Number(event.target.value) } : item))} disabled={gradeSettingsBusy} /></label>
+                      <label className="field"><span>Grade label</span><input value={rule.gradeLabel} maxLength={10} onChange={(event) => setGradeRules((current) => current.map((item, i) => i === index ? { ...item, gradeLabel: event.target.value } : item))} disabled={gradeSettingsBusy} /></label>
+                    </div>
+                    <label className="field"><span>Class teacher's automatic remark</span><textarea rows={2} maxLength={500} value={rule.teacherRemark} onChange={(event) => setGradeRules((current) => current.map((item, i) => i === index ? { ...item, teacherRemark: event.target.value } : item))} disabled={gradeSettingsBusy} /></label>
+                    <label className="field"><span>Principal's automatic remark</span><textarea rows={2} maxLength={500} value={rule.principalRemark} onChange={(event) => setGradeRules((current) => current.map((item, i) => i === index ? { ...item, principalRemark: event.target.value } : item))} disabled={gradeSettingsBusy} /></label>
+                  </div>
+                ))}
+                <div className="academic-item-actions">
+                  <button className="secondary-button" type="button" onClick={() => setGradeRules((current) => {
+                    const used = new Set(current.map((rule) => Number(rule.minimumScore)));
+                    const minimumScore = Array.from({ length: 101 }, (_, i) => 100 - i).find((score) => !used.has(score));
+                    if (minimumScore === undefined || current.length >= 20) return current;
+                    return [...current, { minimumScore, gradeLabel: "New", teacherRemark: "", principalRemark: "", sortOrder: current.length + 1 }].sort((a, b) => Number(b.minimumScore) - Number(a.minimumScore));
+                  })} disabled={gradeSettingsBusy || gradeRules.length >= 20}>Add grading rule</button>
+                  <button className="primary-button" type="button" onClick={() => void saveGradeSettings()} disabled={gradeSettingsBusy || gradeRules.length === 0}>{gradeSettingsBusy ? "Saving..." : "Save grading settings"}</button>
+                  <button className="secondary-button" type="button" onClick={() => void loadGradeSettings()} disabled={gradeSettingsBusy}>Reload saved settings</button>
+                </div>
+                <p className="page-subtitle">These settings are stored in the local school database and used when report cards are generated.</p>
+              </section>
+              <section className="panel academic-panel">
+                <div className="section-heading"><div><h2>Position-based report remarks</h2><p>These remarks depend on the student's final position in the selected class, not the student's grade. Tied positions receive the same remark.</p></div></div>
+                {positionSettingsError && <div className="save-message error-message" role="alert">{positionSettingsError}</div>}
+                {positionSettingsMessage && <div className="save-message" role="status">{positionSettingsMessage}</div>}
+                {positionRemarkRules.map((rule, index) => (
+                  <div className="panel" key={rule.positionKey} style={{ marginBottom: "14px" }}>
+                    <label className="field"><span>{rule.positionLabel}</span><textarea rows={2} maxLength={500} value={rule.remark} onChange={(event) => setPositionRemarkRules((current) => current.map((item, i) => i === index ? { ...item, remark: event.target.value } : item))} disabled={positionSettingsBusy} /></label>
+                  </div>
+                ))}
+                <div className="academic-item-actions">
+                  <button className="primary-button" type="button" onClick={() => void savePositionRemarkSettings()} disabled={positionSettingsBusy || positionRemarkRules.length !== 4}>{positionSettingsBusy ? "Saving..." : "Save position remarks"}</button>
+                  <button className="secondary-button" type="button" onClick={() => void loadPositionRemarkSettings()} disabled={positionSettingsBusy}>Reload position remarks</button>
+                </div>
+              </section>
+            </section>
+          )}
+
         </div>
       </main>
     </div>

@@ -89,11 +89,11 @@ Backups may contain sensitive student information. Warn users before sharing, an
 
 ## 8. Platform strategy
 
-The requested target is Windows computers and Android phones. Build and validate incrementally:
-1. Stabilize and test the existing Windows/Tauri app.
-2. Develop core database and business logic with testable boundaries.
-3. Validate Tauri Android setup, plugins, file import/export, camera/scanner permissions, SQLite paths, backup destinations, and screen layouts on a real Android device.
-4. Maintain platform-specific tests and release instructions.
+The requested target is Windows computers and Android phones. Treat Windows and Android as first-release targets from the start, not as a later optional product. Build and validate incrementally:
+1. Stabilize the existing Windows/Tauri app while setting up an Android build smoke test early in the project.
+2. Keep database and business logic platform-neutral where practical, and run basic build checks for both platforms as the core evolves.
+3. Validate Tauri Android setup, plugins, file import/export, camera/scanner permissions, SQLite paths, backup destinations, and screen layouts on a real Android device before relying on those features.
+4. Maintain platform-specific tests and release instructions; desktop success does not count as Android validation.
 
 Do not assume that desktop dialogs, file paths, or image acquisition APIs work the same way on Android. An Android release is complete only after a signed/debug build can be installed and tested on a device.
 

@@ -121,6 +121,7 @@ function App() {
   const [studentBusy, setStudentBusy] = useState(false);
   const [markClassId, setMarkClassId] = useState<number | "">("");
   const [markSubjectId, setMarkSubjectId] = useState<number | "">("");
+  const [markClassSubjects, setMarkClassSubjects] = useState<ClassSubject[]>([]);
   const [markAssessment, setMarkAssessment] = useState("Examination");
   const [markMaxScore, setMarkMaxScore] = useState("100");
   const [markRows, setMarkRows] = useState<MarkEntryRow[]>([]);
@@ -603,6 +604,35 @@ function App() {
       setMarkBusy(false);
     }
   };
+
+  useEffect(() => {
+    if (page !== "Marks Entry" || markClassId === "") {
+      setMarkClassSubjects([]);
+      return;
+    }
+    let active = true;
+    async function loadAssignedSubjects() {
+      try {
+        const assigned = await invoke<ClassSubject[]>("get_class_subjects", { classId: markClassId });
+        if (!active) return;
+        setMarkClassSubjects(assigned);
+        setMarkSubjectId((current) =>
+          current !== "" && assigned.some((item) => item.subjectId === current)
+            ? current
+            : assigned[0]?.subjectId ?? ""
+        );
+        setMarkRows([]);
+      } catch (error) {
+        if (active) {
+          setMarkClassSubjects([]);
+          setMarkSubjectId("");
+          setMarkError(String(error));
+        }
+      }
+    }
+    void loadAssignedSubjects();
+    return () => { active = false; };
+  }, [page, markClassId]);
 
   useEffect(() => {
     if (page !== "Students") return;
@@ -1494,7 +1524,7 @@ function App() {
                   </label>
                   <label className="field"><span>Subject *</span>
                     <select value={markSubjectId} onChange={(event) => { setMarkSubjectId(event.target.value ? Number(event.target.value) : ""); setMarkRows([]); }} disabled={markBusy}>
-                      <option value="">Select subject</option>{subjects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                      <option value="">Select subject</option>{markClassSubjects.map((item) => <option key={item.subjectId} value={item.subjectId}>{item.subjectName}</option>)}
                     </select>
                   </label>
                   <label className="field"><span>Assessment label *</span>

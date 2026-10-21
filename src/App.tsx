@@ -1228,13 +1228,40 @@ function App() {
   };
 
   const saveGradeSettings = async () => {
-    setGradeSettingsBusy(true); setGradeSettingsError(""); setGradeSettingsMessage("");
+    setGradeSettingsError("");
+    setGradeSettingsMessage("");
+    if (gradeRules.length === 0 || gradeRules.length > 20) {
+      setGradeSettingsError("Keep between 1 and 20 grading rules.");
+      return;
+    }
+    const thresholds = gradeRules.map((rule) => Number(rule.minimumScore));
+    if (thresholds.some((score) => !Number.isFinite(score) || score < 0 || score > 100)) {
+      setGradeSettingsError("Every minimum percentage must be between 0 and 100.");
+      return;
+    }
+    if (new Set(thresholds.map((score) => Math.round(score * 100))).size !== thresholds.length) {
+      setGradeSettingsError("Each grading rule must have a different minimum percentage.");
+      return;
+    }
+    if (!thresholds.includes(0)) {
+      setGradeSettingsError("Keep a 0% rule so every possible result receives a grade and remarks.");
+      return;
+    }
+    if (gradeRules.some((rule) => !rule.gradeLabel.trim())) {
+      setGradeSettingsError("Enter a grade label for every grading rule.");
+      return;
+    }
+    setGradeSettingsBusy(true);
     try {
-      const orderedRules = [...gradeRules].sort((a, b) => b.minimumScore - a.minimumScore);
+      const orderedRules = [...gradeRules].sort((a, b) => Number(b.minimumScore) - Number(a.minimumScore));
       await invoke("save_grade_remark_rules", { rules: orderedRules });
-      setGradeRules(orderedRules); setGradeSettingsMessage("Grading and automatic remark rules saved.");
-    } catch (error) { setGradeSettingsError(String(error)); }
-    finally { setGradeSettingsBusy(false); }
+      setGradeRules(orderedRules);
+      setGradeSettingsMessage("Grading and automatic remark rules saved.");
+    } catch (error) {
+      setGradeSettingsError(String(error));
+    } finally {
+      setGradeSettingsBusy(false);
+    }
   };
 
   const loadPositionRemarkSettings = async () => {
@@ -2402,7 +2429,7 @@ function App() {
                       </div>
                     ))}
                   </div>
-                  <p className="page-subtitle">Tied averages share the same competition rank (for example, 1, 2, 2, 4). Students without marks appear after students with results. Grades, teacher/principal remarks, printable report cards and PDF export are not yet implemented.</p>
+                  <p className="page-subtitle">Tied averages share the same competition rank (for example, 1, 2, 2, 4). Students without marks appear after students with results. Individual report cards use the grading and remark rules configured in Settings and can be printed or saved as PDF.</p>
                 </section>
               )}
             </section>
@@ -2491,6 +2518,9 @@ function App() {
                 <div className="section-heading"><div><h2>Grading and automatic remarks</h2><p>Rules are matched from the highest minimum percentage downward. Keep a 0% rule for all remaining results.</p></div></div>
                 {gradeRules.map((rule, index) => (
                   <div className="panel" key={index} style={{ marginBottom: "14px" }}>
+                    <div className="academic-item-actions" style={{ justifyContent: "flex-end" }}>
+                      <button className="secondary-button" type="button" onClick={() => setGradeRules((current) => current.filter((_, i) => i !== index))} disabled={gradeSettingsBusy || gradeRules.length <= 1}>Remove rule</button>
+                    </div>
                     <div className="assignment-form">
                       <label className="field"><span>Minimum percentage</span><input type="number" min="0" max="100" step="1" value={rule.minimumScore} onChange={(event) => setGradeRules((current) => current.map((item, i) => i === index ? { ...item, minimumScore: Number(event.target.value) } : item))} disabled={gradeSettingsBusy} /></label>
                       <label className="field"><span>Grade label</span><input value={rule.gradeLabel} maxLength={10} onChange={(event) => setGradeRules((current) => current.map((item, i) => i === index ? { ...item, gradeLabel: event.target.value } : item))} disabled={gradeSettingsBusy} /></label>
@@ -2499,7 +2529,16 @@ function App() {
                     <label className="field"><span>Principal's automatic remark</span><textarea rows={2} maxLength={500} value={rule.principalRemark} onChange={(event) => setGradeRules((current) => current.map((item, i) => i === index ? { ...item, principalRemark: event.target.value } : item))} disabled={gradeSettingsBusy} /></label>
                   </div>
                 ))}
-                <div className="academic-item-actions"><button className="primary-button" type="button" onClick={() => void saveGradeSettings()} disabled={gradeSettingsBusy || gradeRules.length === 0}>{gradeSettingsBusy ? "Saving..." : "Save grading settings"}</button><button className="secondary-button" type="button" onClick={() => void loadGradeSettings()} disabled={gradeSettingsBusy}>Reload saved settings</button></div>
+                <div className="academic-item-actions">
+                  <button className="secondary-button" type="button" onClick={() => setGradeRules((current) => {
+                    const used = new Set(current.map((rule) => Number(rule.minimumScore)));
+                    const minimumScore = Array.from({ length: 101 }, (_, i) => 100 - i).find((score) => !used.has(score));
+                    if (minimumScore === undefined || current.length >= 20) return current;
+                    return [...current, { minimumScore, gradeLabel: "New", teacherRemark: "", principalRemark: "", sortOrder: current.length + 1 }].sort((a, b) => Number(b.minimumScore) - Number(a.minimumScore));
+                  })} disabled={gradeSettingsBusy || gradeRules.length >= 20}>Add grading rule</button>
+                  <button className="primary-button" type="button" onClick={() => void saveGradeSettings()} disabled={gradeSettingsBusy || gradeRules.length === 0}>{gradeSettingsBusy ? "Saving..." : "Save grading settings"}</button>
+                  <button className="secondary-button" type="button" onClick={() => void loadGradeSettings()} disabled={gradeSettingsBusy}>Reload saved settings</button>
+                </div>
                 <p className="page-subtitle">These settings are stored in the local school database and used when report cards are generated.</p>
               </section>
               <section className="panel academic-panel">

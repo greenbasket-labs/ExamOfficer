@@ -107,6 +107,9 @@ fn database_connection(app: &tauri::AppHandle) -> Result<Connection, String> {
                 gender TEXT NOT NULL CHECK (gender IN ('Male', 'Female')),
                 class_id INTEGER NOT NULL,
                 admission_date TEXT NOT NULL DEFAULT '',
+                admission_number TEXT NOT NULL DEFAULT '',
+                date_of_birth TEXT NOT NULL DEFAULT '',
+                guardian_phone TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY(class_id) REFERENCES school_classes(id)
                     ON DELETE RESTRICT
@@ -170,6 +173,30 @@ fn database_connection(app: &tauri::AppHandle) -> Result<Connection, String> {
                 ON students(class_id);",
         )
         .map_err(|e| format!("Cannot initialize local database: {e}"))?;
+
+    // Safely add optional student details to existing databases.
+    for (column, definition) in [
+        ("admission_number", "TEXT NOT NULL DEFAULT ''"),
+        ("date_of_birth", "TEXT NOT NULL DEFAULT ''"),
+        ("guardian_phone", "TEXT NOT NULL DEFAULT ''"),
+    ] {
+        let mut statement = connection.prepare("PRAGMA table_info(students)")
+            .map_err(|e| format!("Cannot inspect student schema: {e}"))?;
+        let columns = statement.query_map([], |row| row.get::<_, String>(1))
+            .map_err(|e| format!("Cannot inspect student columns: {e}"))?;
+        let mut exists = false;
+        for item in columns {
+            if item.map_err(|e| format!("Cannot read student schema: {e}"))? == column {
+                exists = true;
+                break;
+            }
+        }
+        drop(statement);
+        if !exists {
+            connection.execute_batch(&format!("ALTER TABLE students ADD COLUMN {column} {definition};"))
+                .map_err(|e| format!("Cannot add student field {column}: {e}"))?;
+        }
+    }
 
     // Safely add configurable school sections to existing databases.
     connection.execute_batch(
@@ -750,6 +777,161 @@ fn create_student(
     Ok(connection.last_insert_rowid())
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StudentImportRow {
+    first_name: String,
+    middle_name: Option<String>,
+    last_name: String,
+    gender: String,
+    class_id: i64,
+    section_code: String,
+    admission_date: Option<String>,
+    admission_number: Option<String>,
+    date_of_birth: Option<String>,
+    guardian_phone: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StudentImportResult {
+    created_count: usize,
+    student_ids: Vec<String>,
+}
+
+#[tauri::command]
+fn import_students(
+    app: tauri::AppHandle,
+    school_name: String,
+    id_year: String,
+    students: Vec<StudentImportRow>,
+) -> Result<StudentImportResult, String> {
+    if students.is_empty() {
+        return Err("There are no students to import.".to_string());
+    }
+    if students.len() > 2000 {
+        return Err("Import is limited to 2,000 students at a time.".to_string());
+    }
+    let school_name = clean_name(school_name, "School name")?;
+    let id_year = id_year.trim().to_string();
+    if id_year.len() != 4 || !id_year.chars().all(|c| c.is_ascii_digit()) {
+        return Err("The ID year must contain four digits.".to_string());
+    }
+    let school_code = school_name
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|part| !part.is_empty())
+        .filter_map(|part| part.chars().next())
+        .take(5)
+        .collect::<String>()
+        .to_uppercase();
+    if school_code.is_empty() {
+        return Err("Cannot create an abbreviation from the school name.".to_string());
+    }
+
+    let connection = database_connection(&app)?;
+    let mut prepared = Vec::with_capacity(students.len());
+    let mut names_seen = std::collections::HashSet::new();
+    let mut admission_numbers_seen = std::collections::HashSet::new();
+
+    for row in students {
+        let first_name = clean_name(row.first_name, "First name")?;
+        let last_name = clean_name(row.last_name, "Last name")?;
+        let middle_name = row.middle_name.unwrap_or_default().trim().to_string();
+        let gender = row.gender.trim().to_string();
+        let section_code = row.section_code.trim().to_uppercase();
+        let admission_date = row.admission_date.unwrap_or_default().trim().to_string();
+        let admission_number = row.admission_number.unwrap_or_default().trim().to_string();
+        let date_of_birth = row.date_of_birth.unwrap_or_default().trim().to_string();
+        let guardian_phone = row.guardian_phone.unwrap_or_default().trim().to_string();
+
+        if !matches!(gender.as_str(), "Male" | "Female") {
+            return Err(format!("Invalid gender for {first_name} {last_name}. Use Male or Female."));
+        }
+        if middle_name.chars().count() > 100 || admission_number.chars().count() > 100
+            || guardian_phone.chars().count() > 50 {
+            return Err(format!("One or more fields are too long for {first_name} {last_name}."));
+        }
+        if !admission_date.is_empty() && (admission_date.len() != 10 || !admission_date.chars().all(|c| c.is_ascii_digit() || c == '-')) {
+            return Err(format!("Invalid admission date for {first_name} {last_name}; use YYYY-MM-DD."));
+        }
+        if !date_of_birth.is_empty() && (date_of_birth.len() != 10 || !date_of_birth.chars().all(|c| c.is_ascii_digit() || c == '-')) {
+            return Err(format!("Invalid date of birth for {first_name} {last_name}; use YYYY-MM-DD."));
+        }
+        let class_section: Option<String> = connection.query_row(
+            "SELECT ss.code FROM school_classes c JOIN school_sections ss ON ss.id = c.section_id WHERE c.id = ?1",
+            params![row.class_id],
+            |dbrow| dbrow.get(0),
+        ).optional().map_err(|e| format!("Cannot validate class for {first_name} {last_name}: {e}"))?;
+        let actual_code = class_section.ok_or_else(|| format!("The selected class for {first_name} {last_name} has no section assigned."))?;
+        if actual_code.to_uppercase() != section_code {
+            return Err(format!("Section mismatch for {first_name} {last_name}. The selected class belongs to {actual_code}, not {section_code}."));
+        }
+
+        let normalized_name = format!("{}|{}|{}|{}", first_name.to_lowercase(), middle_name.to_lowercase(), last_name.to_lowercase(), row.class_id);
+        if !names_seen.insert(normalized_name) {
+            return Err(format!("The import file contains a duplicate student name in the same class: {first_name} {last_name}."));
+        }
+        if !admission_number.is_empty() && !admission_numbers_seen.insert(admission_number.to_lowercase()) {
+            return Err(format!("The import file repeats admission number {admission_number}."));
+        }
+        prepared.push((first_name, middle_name, last_name, gender, row.class_id, section_code, admission_date, admission_number, date_of_birth, guardian_phone));
+    }
+
+    let transaction = connection.unchecked_transaction()
+        .map_err(|e| format!("Cannot start student import transaction: {e}"))?;
+    for (first_name, middle_name, last_name, gender, class_id, section_code, admission_date, admission_number, date_of_birth, guardian_phone) in &prepared {
+        let existing_name: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM students WHERE lower(first_name) = lower(?1) AND lower(middle_name) = lower(?2) AND lower(last_name) = lower(?3) AND class_id = ?4)",
+            params![first_name, middle_name, last_name, class_id],
+            |row| row.get(0),
+        ).map_err(|e| format!("Cannot check existing student {first_name} {last_name}: {e}"))?;
+        if existing_name {
+            return Err(format!("A student named {first_name} {last_name} already exists in this class. No students were imported."));
+        }
+        if !admission_number.is_empty() {
+            let existing_admission: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM students WHERE lower(admission_number) = lower(?1))",
+                params![admission_number],
+                |row| row.get(0),
+            ).map_err(|e| format!("Cannot check admission number: {e}"))?;
+            if existing_admission {
+                return Err(format!("Admission number {admission_number} already exists. No students were imported."));
+            }
+        }
+    }
+
+    let mut generated_ids = Vec::with_capacity(prepared.len());
+    for (first_name, middle_name, last_name, gender, class_id, section_code, admission_date, admission_number, date_of_birth, guardian_phone) in &prepared {
+        let mut generated_id = String::new();
+        for _ in 0..100 {
+            let random_number: i64 = transaction.query_row("SELECT abs(random() % 10000)", [], |row| row.get(0))
+                .map_err(|e| format!("Cannot generate a student ID: {e}"))?;
+            let id_section_code = if section_code == "SS" { "SSS" } else { section_code.as_str() };
+            let candidate = format!("{school_code}-{id_year}-{id_section_code}-{random_number:04}");
+            let used: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM students WHERE student_id = ?1)",
+                params![candidate],
+                |row| row.get(0),
+            ).map_err(|e| format!("Cannot check generated student ID: {e}"))?;
+            if !used && !generated_ids.iter().any(|id| id == &candidate) {
+                generated_id = candidate;
+                break;
+            }
+        }
+        if generated_id.is_empty() {
+            return Err(format!("Could not find an unused ID for {first_name} {last_name}. No students were imported."));
+        }
+        transaction.execute(
+            "INSERT INTO students (student_id, first_name, middle_name, last_name, gender, class_id, admission_date, admission_number, date_of_birth, guardian_phone)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![generated_id, first_name, middle_name, last_name, gender, class_id, admission_date, admission_number, date_of_birth, guardian_phone],
+        ).map_err(|e| format!("Cannot import {first_name} {last_name}; no students were imported: {e}"))?;
+        generated_ids.push(generated_id);
+    }
+    transaction.commit().map_err(|e| format!("Cannot finish student import: {e}"))?;
+    Ok(StudentImportResult { created_count: generated_ids.len(), student_ids: generated_ids })
+}
+
 #[tauri::command]
 fn delete_student(app: tauri::AppHandle, id: i64) -> Result<(), String> {
     let connection = database_connection(&app)?;
@@ -1155,6 +1337,7 @@ pub fn run() {
             save_report_card_remarks,
             get_students,
             create_student,
+            import_students,
             delete_student
         ])
         .run(tauri::generate_context!())

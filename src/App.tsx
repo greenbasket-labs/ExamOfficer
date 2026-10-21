@@ -1900,18 +1900,12 @@ function App() {
                         <div><strong>Average</strong><p>{summary.average === null ? "—" : `${summary.average.toFixed(2)}%`}</p></div>
                         <div><strong>Class position</strong><p>{summary.average === null ? "Not ranked" : `${summary.position}`}</p></div>
                       </div>
-                      <div style={{ marginTop: "18px" }}><strong>Class teacher's remark</strong><p style={{ whiteSpace: "pre-wrap", minHeight: "36px" }}>{reportTeacherRemark || "—"}</p></div>
-                      <div style={{ marginTop: "18px" }}><strong>Principal's remark</strong><p style={{ whiteSpace: "pre-wrap", minHeight: "36px" }}>{reportPrincipalRemark || "—"}</p></div>
+                      <div className="assignment-form" style={{ marginBottom: "18px" }}><div><strong>Grade</strong><p>{summary.average === null ? "—" : (gradeRules.find((rule) => summary.average! >= rule.minimumScore)?.gradeLabel ?? "—")}</p></div></div>
+                      <div style={{ marginTop: "18px" }}><strong>Class teacher's remark</strong><p style={{ whiteSpace: "pre-wrap", minHeight: "36px" }}>{summary.average === null ? "No result available for remark generation." : (gradeRules.find((rule) => summary.average! >= rule.minimumScore)?.teacherRemark || "—")}</p></div>
+                      <div style={{ marginTop: "18px" }}><strong>Principal's remark</strong><p style={{ whiteSpace: "pre-wrap", minHeight: "36px" }}>{summary.average === null ? "No result available for remark generation." : (gradeRules.find((rule) => summary.average! >= rule.minimumScore)?.principalRemark || "—")}</p></div>
                       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "28px", marginTop: "36px" }}><div style={{ borderTop: "1px solid #777", paddingTop: "8px" }}>Class teacher's signature</div><div style={{ borderTop: "1px solid #777", paddingTop: "8px" }}>Principal's signature</div></div>
                     </section>
-                    <section className="panel academic-panel no-print">
-                      <div className="section-heading"><div><h2>Remarks</h2><p>Remarks are saved for this student, session and term.</p></div></div>
-                      <label className="field"><span>Class teacher's remark (max 500 characters)</span><textarea value={reportTeacherRemark} onChange={(event) => setReportTeacherRemark(event.target.value)} maxLength={500} rows={3} disabled={reportBusy} placeholder="Enter the class teacher's remark" /></label>
-                      <label className="field"><span>Principal's remark (max 500 characters)</span><textarea value={reportPrincipalRemark} onChange={(event) => setReportPrincipalRemark(event.target.value)} maxLength={500} rows={3} disabled={reportBusy} placeholder="Enter the principal's remark" /></label>
-                      <div className="academic-item-actions"><button className="primary-button" type="button" onClick={() => void saveReportCardRemarks()} disabled={reportBusy}>Save remarks</button><button className="secondary-button" type="button" onClick={() => window.print()}>Print / Save as PDF</button></div>
-                      <p className="page-subtitle">Use the print dialog's “Save as PDF” option to create a PDF. Automatic PDF generation and grade labels are not implemented yet.</p>
-                    </section>
-                  </>
+                    <section className="panel academic-panel no-print"><div className="academic-item-actions"><button className="secondary-button" type="button" onClick={() => window.print()}>Print / Save as PDF</button></div><p className="page-subtitle">Grades and remarks are generated from the rules in Settings. Use the print dialog's “Save as PDF” option to create a PDF.</p></section>
                 );
               })()}
               {reportClassId !== "" && reportStudentId === "" && <p className="empty-state">No students are registered in this class yet.</p>}
@@ -1920,8 +1914,24 @@ function App() {
           {page === "Settings" && (
             <section className="inner-page">
               <div className="eyebrow">SYSTEM CONFIGURATION</div><h1>Settings</h1>
-              <p className="page-subtitle">Grading rules, remarks, backup and privacy controls will be added in later stages.</p>
-              <div className="panel coming-panel"><div className="coming-icon">⚙</div><h2>Settings</h2><p>These settings are not yet implemented.</p></div>
+              <p className="page-subtitle">Configure grade boundaries and automatic class teacher and principal remarks for report cards.</p>
+              {gradeSettingsError && <div className="save-message error-message" role="alert">{gradeSettingsError}</div>}
+              {gradeSettingsMessage && <div className="save-message" role="status">{gradeSettingsMessage}</div>}
+              <section className="panel academic-panel">
+                <div className="section-heading"><div><h2>Grading and automatic remarks</h2><p>Rules are matched from the highest minimum percentage downward. Keep a 0% rule for all remaining results.</p></div></div>
+                {gradeRules.map((rule, index) => (
+                  <div className="panel" key={index} style={{ marginBottom: "14px" }}>
+                    <div className="assignment-form">
+                      <label className="field"><span>Minimum percentage</span><input type="number" min="0" max="100" step="1" value={rule.minimumScore} onChange={(event) => setGradeRules((current) => current.map((item, i) => i === index ? { ...item, minimumScore: Number(event.target.value) } : item))} disabled={gradeSettingsBusy} /></label>
+                      <label className="field"><span>Grade label</span><input value={rule.gradeLabel} maxLength={10} onChange={(event) => setGradeRules((current) => current.map((item, i) => i === index ? { ...item, gradeLabel: event.target.value } : item))} disabled={gradeSettingsBusy} /></label>
+                    </div>
+                    <label className="field"><span>Class teacher's automatic remark</span><textarea rows={2} maxLength={500} value={rule.teacherRemark} onChange={(event) => setGradeRules((current) => current.map((item, i) => i === index ? { ...item, teacherRemark: event.target.value } : item))} disabled={gradeSettingsBusy} /></label>
+                    <label className="field"><span>Principal's automatic remark</span><textarea rows={2} maxLength={500} value={rule.principalRemark} onChange={(event) => setGradeRules((current) => current.map((item, i) => i === index ? { ...item, principalRemark: event.target.value } : item))} disabled={gradeSettingsBusy} /></label>
+                  </div>
+                ))}
+                <div className="academic-item-actions"><button className="primary-button" type="button" onClick={() => void saveGradeSettings()} disabled={gradeSettingsBusy || gradeRules.length === 0}>{gradeSettingsBusy ? "Saving..." : "Save grading settings"}</button><button className="secondary-button" type="button" onClick={() => void loadGradeSettings()} disabled={gradeSettingsBusy}>Reload saved settings</button></div>
+                <p className="page-subtitle">These settings are stored in the local school database and used when report cards are generated.</p>
+              </section>
             </section>
           )}
 

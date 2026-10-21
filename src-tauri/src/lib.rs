@@ -127,6 +127,22 @@ fn database_connection(app: &tauri::AppHandle) -> Result<Connection, String> {
                 FOREIGN KEY(subject_id) REFERENCES subjects(id) ON DELETE RESTRICT
              );
 
+             CREATE TABLE IF NOT EXISTS grade_remark_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                minimum_score REAL NOT NULL UNIQUE CHECK (minimum_score >= 0 AND minimum_score <= 100),
+                grade_label TEXT NOT NULL,
+                teacher_remark TEXT NOT NULL DEFAULT '',
+                principal_remark TEXT NOT NULL DEFAULT '',
+                sort_order INTEGER NOT NULL DEFAULT 0
+             );
+
+             INSERT OR IGNORE INTO grade_remark_rules (minimum_score, grade_label, teacher_remark, principal_remark, sort_order) VALUES
+                (80, 'A', 'Excellent performance. Keep it up.', 'An excellent result. Maintain this standard.', 1),
+                (70, 'B', 'Very good performance. Continue to improve.', 'A very good result. Keep working hard.', 2),
+                (60, 'C', 'Good performance. Aim higher.', 'A good result with room for further improvement.', 3),
+                (50, 'D', 'Fair performance. More effort is needed.', 'Encourage more consistent study and practice.', 4),
+                (0, 'F', 'Needs considerable improvement and support.', 'Please work with the student to improve performance.', 5);
+
              CREATE TABLE IF NOT EXISTS report_card_remarks (
                 student_id INTEGER NOT NULL,
                 session TEXT NOT NULL,
@@ -970,6 +986,71 @@ fn save_report_card_remarks(
     Ok(())
 }
 
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GradeRemarkRule {
+    minimum_score: f64,
+    grade_label: String,
+    teacher_remark: String,
+    principal_remark: String,
+    sort_order: i64,
+}
+
+#[tauri::command]
+fn get_grade_remark_rules(app: tauri::AppHandle) -> Result<Vec<GradeRemarkRule>, String> {
+    let connection = database_connection(&app)?;
+    let mut statement = connection.prepare(
+        "SELECT minimum_score, grade_label, teacher_remark, principal_remark, sort_order
+         FROM grade_remark_rules ORDER BY minimum_score DESC"
+    ).map_err(|e| format!("Cannot prepare grading settings query: {e}"))?;
+    let rows = statement.query_map([], |row| Ok(GradeRemarkRule {
+        minimum_score: row.get(0)?,
+        grade_label: row.get(1)?,
+        teacher_remark: row.get(2)?,
+        principal_remark: row.get(3)?,
+        sort_order: row.get(4)?,
+    })).map_err(|e| format!("Cannot read grading settings: {e}"))?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("Cannot read grading settings: {e}"))
+}
+
+#[tauri::command]
+fn save_grade_remark_rules(app: tauri::AppHandle, rules: Vec<GradeRemarkRule>) -> Result<(), String> {
+    if rules.is_empty() || rules.len() > 20 {
+        return Err("Provide between 1 and 20 grading rules.".to_string());
+    }
+    let mut thresholds = std::collections::HashSet::new();
+    for rule in &rules {
+        if !rule.minimum_score.is_finite() || !(0.0..=100.0).contains(&rule.minimum_score) {
+            return Err("Each minimum score must be between 0 and 100.".to_string());
+        }
+        if !thresholds.insert((rule.minimum_score * 100.0).round() as i64) {
+            return Err("Each grading threshold must be unique.".to_string());
+        }
+        if rule.grade_label.trim().is_empty() || rule.grade_label.chars().count() > 10 {
+            return Err("Each grade label must contain 1 to 10 characters.".to_string());
+        }
+        if rule.teacher_remark.chars().count() > 500 || rule.principal_remark.chars().count() > 500 {
+            return Err("Each automatic remark must be 500 characters or fewer.".to_string());
+        }
+    }
+    if !rules.iter().any(|rule| rule.minimum_score == 0.0) {
+        return Err("Include a rule starting at 0% so every result has a grade and remark.".to_string());
+    }
+    let mut connection = database_connection(&app)?;
+    let transaction = connection.transaction().map_err(|e| format!("Cannot start grading settings update: {e}"))?;
+    transaction.execute("DELETE FROM grade_remark_rules", []).map_err(|e| format!("Cannot replace grading settings: {e}"))?;
+    for (index, rule) in rules.iter().enumerate() {
+        transaction.execute(
+            "INSERT INTO grade_remark_rules (minimum_score, grade_label, teacher_remark, principal_remark, sort_order)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![rule.minimum_score, rule.grade_label.trim(), rule.teacher_remark.trim(), rule.principal_remark.trim(), index as i64 + 1],
+        ).map_err(|e| format!("Cannot save grading rule: {e}"))?;
+    }
+    transaction.commit().map_err(|e| format!("Cannot finish grading settings update: {e}"))?;
+    Ok(())
+}
+
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
@@ -1000,6 +1081,8 @@ pub fn run() {
             get_mark_entries,
             save_mark_entry,
             get_class_results,
+            get_grade_remark_rules,
+            save_grade_remark_rules,
             get_report_card_remarks,
             save_report_card_remarks,
             get_students,

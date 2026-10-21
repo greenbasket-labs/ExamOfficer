@@ -70,6 +70,15 @@ type Student = {
   admissionDate: string;
 };
 
+type MarkEntryRow = {
+  studentId: number;
+  studentCode: string;
+  studentName: string;
+  score: number | null;
+  maxScore: number | null;
+};
+
+
 function App() {
   const [page, setPage] = useState<Page>("Dashboard");
   const [schoolName, setSchoolName] = useState("");
@@ -110,6 +119,15 @@ function App() {
   const [studentError, setStudentError] = useState("");
   const [studentMessage, setStudentMessage] = useState("");
   const [studentBusy, setStudentBusy] = useState(false);
+  const [markClassId, setMarkClassId] = useState<number | "">("");
+  const [markSubjectId, setMarkSubjectId] = useState<number | "">("");
+  const [markAssessment, setMarkAssessment] = useState("Examination");
+  const [markMaxScore, setMarkMaxScore] = useState("100");
+  const [markRows, setMarkRows] = useState<MarkEntryRow[]>([]);
+  const [markInputs, setMarkInputs] = useState<Record<number, string>>({});
+  const [markError, setMarkError] = useState("");
+  const [markMessage, setMarkMessage] = useState("");
+  const [markBusy, setMarkBusy] = useState(false);
 
   // Keep a class selected whenever classes are available.
   useEffect(() => {
@@ -487,6 +505,102 @@ function App() {
       active = false;
     };
   }, [page]);
+
+  useEffect(() => {
+    if (page !== "Marks Entry") return;
+    let active = true;
+    async function loadMarkSetup() {
+      setMarkError("");
+      try {
+        const [loadedClasses, loadedSubjects] = await Promise.all([
+          invoke<SchoolClass[]>("get_classes"),
+          invoke<Subject[]>("get_subjects"),
+        ]);
+        if (!active) return;
+        setClasses(loadedClasses);
+        setSubjects(loadedSubjects);
+        setMarkClassId((current) =>
+          current !== "" && loadedClasses.some((item) => item.id === current)
+            ? current
+            : loadedClasses[0]?.id ?? ""
+        );
+        setMarkSubjectId((current) =>
+          current !== "" && loadedSubjects.some((item) => item.id === current)
+            ? current
+            : loadedSubjects[0]?.id ?? ""
+        );
+      } catch (error) {
+        if (active) setMarkError(String(error));
+      }
+    }
+    void loadMarkSetup();
+    return () => { active = false; };
+  }, [page]);
+
+  const loadMarkRows = async () => {
+    setMarkError("");
+    setMarkMessage("");
+    if (markClassId === "" || markSubjectId === "") {
+      setMarkError("Create/select a class and subject before loading marks.");
+      return;
+    }
+    if (!markAssessment.trim()) {
+      setMarkError("Enter an assessment name, such as CA1 or Examination.");
+      return;
+    }
+    setMarkBusy(true);
+    try {
+      const rows = await invoke<MarkEntryRow[]>("get_mark_entries", {
+        classId: markClassId,
+        subjectId: markSubjectId,
+        session: session.trim(),
+        term,
+        assessmentName: markAssessment.trim(),
+      });
+      setMarkRows(rows);
+      setMarkInputs(Object.fromEntries(rows.map((row) => [
+        row.studentId, row.score === null ? "" : String(row.score)
+      ])));
+      if (rows.length === 0) setMarkMessage("No students are registered in this class yet.");
+    } catch (error) {
+      setMarkError(String(error));
+    } finally {
+      setMarkBusy(false);
+    }
+  };
+
+  const saveStudentMark = async (row: MarkEntryRow) => {
+    setMarkError("");
+    setMarkMessage("");
+    const rawScore = markInputs[row.studentId]?.trim() ?? "";
+    const score = Number(rawScore);
+    const maxScore = Number(markMaxScore);
+    if (rawScore === "" || !Number.isFinite(score) || !Number.isFinite(maxScore) ||
+        maxScore <= 0 || score < 0 || score > maxScore) {
+      setMarkError(`Enter a valid score for ${row.studentCode} between 0 and the maximum mark.`);
+      return;
+    }
+    setMarkBusy(true);
+    try {
+      await invoke("save_mark_entry", {
+        studentId: row.studentId,
+        subjectId: markSubjectId,
+        session: session.trim(),
+        term,
+        assessmentName: markAssessment.trim(),
+        score,
+        maxScore,
+      });
+      setMarkRows((current) => current.map((item) =>
+        item.studentId === row.studentId ? { ...item, score, maxScore } : item
+      ));
+      setMarkMessage(`Saved mark for ${row.studentCode}.`);
+    } catch (error) {
+      setMarkError(String(error));
+    } finally {
+      setMarkBusy(false);
+    }
+  };
 
   useEffect(() => {
     if (page !== "Students") return;
@@ -1361,29 +1475,71 @@ function App() {
               </section>
             </section>
           )}
-          {page !== "Dashboard" && page !== "School Setup" && page !== "Classes & Subjects" && page !== "Students" && (
+          {page === "Marks Entry" && (
             <section className="inner-page">
-              <div className="eyebrow">
-                {page === "Settings" ? "SYSTEM CONFIGURATION" : "EXAMINATION WORKSPACE"}
-              </div>
-              <h1>{page}</h1>
-              <p className="page-subtitle">
-                                {page === "Marks Entry" && "Record student scores with their correct maximum marks."}
-                {page === "Results & Reports" && "Compile results and prepare printable report cards."}
-                {page === "Settings" && "Configure grading rules and application preferences."}
-              </p>
-              <div className="panel coming-panel">
-                <div className="coming-icon">
-                  {page === "Marks Entry" ? "✎" : page === "Results & Reports" ? "▤" : "⚙"}
+              <div className="eyebrow">EXAMINATION WORKSPACE</div>
+              <h1>Marks Entry</h1>
+              <p className="page-subtitle">Enter marks against each student's permanent record. Scores are saved locally on this computer.</p>
+              {markError && <div className="save-message error-message" role="alert">{markError}</div>}
+              {markMessage && <div className="save-message" role="status">{markMessage}</div>}
+              <section className="panel academic-panel">
+                <div className="section-heading"><div><h2>Assessment details</h2><p>Choose the class, subject and assessment being marked.</p></div></div>
+                <div className="assignment-form">
+                  <label className="field"><span>Class *</span>
+                    <select value={markClassId} onChange={(event) => { setMarkClassId(event.target.value ? Number(event.target.value) : ""); setMarkRows([]); }} disabled={markBusy}>
+                      <option value="">Select class</option>{classes.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                    </select>
+                  </label>
+                  <label className="field"><span>Subject *</span>
+                    <select value={markSubjectId} onChange={(event) => { setMarkSubjectId(event.target.value ? Number(event.target.value) : ""); setMarkRows([]); }} disabled={markBusy}>
+                      <option value="">Select subject</option>{subjects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                    </select>
+                  </label>
+                  <label className="field"><span>Assessment label *</span>
+                    <input value={markAssessment} onChange={(event) => { setMarkAssessment(event.target.value); setMarkRows([]); }} maxLength={60} placeholder="e.g. CA1 or Examination" disabled={markBusy} />
+                  </label>
+                  <label className="field"><span>Maximum mark *</span>
+                    <input type="number" min="1" step="any" value={markMaxScore} onChange={(event) => setMarkMaxScore(event.target.value)} disabled={markBusy} />
+                  </label>
                 </div>
-                <h2>{page} workspace</h2>
-                <p>This section will be implemented in the next stages.</p>
-                <button className="primary-button" onClick={() => choosePage("School Setup")} type="button">
-                  Configure school first <span>→</span>
+                <p className="page-subtitle">Current period: <strong>{session}</strong> · <strong>{term}</strong>. Change these in School Setup before loading marks for another period.</p>
+                <button className="primary-button" type="button" onClick={() => void loadMarkRows()} disabled={markBusy || markClassId === "" || markSubjectId === ""}>
+                  {markBusy ? "Please wait..." : "Load class register"}
                 </button>
-              </div>
+              </section>
+              {markRows.length > 0 && (
+                <section className="panel academic-panel">
+                  <div className="section-heading"><div><h2>Student marks</h2><p>{markRows.length} student(s). Save each score to update that student's record.</p></div><span className="academic-count">{markRows.filter((row) => row.score !== null).length}/{markRows.length} saved</span></div>
+                  <div className="academic-list">
+                    {markRows.map((row) => (
+                      <div className="academic-list-item" key={row.studentId}>
+                        <div><strong>{row.studentName}</strong><p>{row.studentCode}{row.score !== null && row.maxScore !== null ? ` · Saved: ${row.score}/${row.maxScore}` : " · No mark saved yet"}</p></div>
+                        <div className="academic-item-actions">
+                          <input aria-label={`Score for ${row.studentCode}`} type="number" min="0" max={markMaxScore} step="any" value={markInputs[row.studentId] ?? ""} onChange={(event) => setMarkInputs((current) => ({ ...current, [row.studentId]: event.target.value }))} placeholder="Score" disabled={markBusy} style={{ width: "100px" }} />
+                          <button className="secondary-button compact-button" type="button" onClick={() => void saveStudentMark(row)} disabled={markBusy}>Save mark</button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
             </section>
           )}
+          {page === "Results & Reports" && (
+            <section className="inner-page">
+              <div className="eyebrow">EXAMINATION WORKSPACE</div><h1>Results & Reports</h1>
+              <p className="page-subtitle">Result calculations, rankings, report cards and printable exports are planned next. This screen does not yet generate final results.</p>
+              <div className="panel coming-panel"><div className="coming-icon">▤</div><h2>Results & Reports</h2><p>Marks entry foundation is in progress. Report calculations, rankings and report-card exports are not yet implemented.</p></div>
+            </section>
+          )}
+          {page === "Settings" && (
+            <section className="inner-page">
+              <div className="eyebrow">SYSTEM CONFIGURATION</div><h1>Settings</h1>
+              <p className="page-subtitle">Grading rules, remarks, backup and privacy controls will be added in later stages.</p>
+              <div className="panel coming-panel"><div className="coming-icon">⚙</div><h2>Settings</h2><p>These settings are not yet implemented.</p></div>
+            </section>
+          )}
+
         </div>
       </main>
     </div>

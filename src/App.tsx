@@ -1906,6 +1906,7 @@ function App() {
                       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "28px", marginTop: "36px" }}><div style={{ borderTop: "1px solid #777", paddingTop: "8px" }}>Class teacher's signature</div><div style={{ borderTop: "1px solid #777", paddingTop: "8px" }}>Principal's signature</div></div>
                     </section>
                     <section className="panel academic-panel no-print"><div className="academic-item-actions"><button className="secondary-button" type="button" onClick={() => window.print()}>Print / Save as PDF</button></div><p className="page-subtitle">Grades and remarks are generated from the rules in Settings. Use the print dialog's “Save as PDF” option to create a PDF.</p></section>
+                  </>
                 );
               })()}
               {reportClassId !== "" && reportStudentId === "" && <p className="empty-state">No students are registered in this class yet.</p>}

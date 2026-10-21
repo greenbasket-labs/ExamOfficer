@@ -2,6 +2,49 @@
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
+
+fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
+    let mut output = Vec::with_capacity(input.len() * 3 / 4);
+    let mut accumulator: u32 = 0;
+    let mut bits: u32 = 0;
+    for byte in input.bytes() {
+        if byte.is_ascii_whitespace() { continue; }
+        if byte == b'=' { break; }
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return Err("The selected PDF could not be decoded.".to_string()),
+        };
+        accumulator = (accumulator << 6) | u32::from(value);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            output.push(((accumulator >> bits) & 0xff) as u8);
+        }
+    }
+    Ok(output)
+}
+
+#[tauri::command]
+fn extract_student_pdf_text(pdf_base64: String) -> Result<String, String> {
+    if pdf_base64.len() > 14 * 1024 * 1024 {
+        return Err("PDF is too large. Please use a PDF smaller than 10 MB.".to_string());
+    }
+    let bytes = decode_base64(&pdf_base64)?;
+    if !bytes.starts_with(b"%PDF-") {
+        return Err("The selected file does not appear to be a valid PDF.".to_string());
+    }
+    let extracted = pdf_extract::extract_text_from_mem(&bytes)
+        .map_err(|error| format!("Could not read PDF text: {error}"))?;
+    if extracted.trim().is_empty() {
+        return Err("No selectable text was found. This may be a scanned PDF; scanned-PDF OCR is not supported yet. Use a text-based PDF or CSV instead.".to_string());
+    }
+    Ok(extracted)
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SchoolProfile {
@@ -1338,6 +1381,7 @@ pub fn run() {
             get_students,
             create_student,
             import_students,
+            extract_student_pdf_text,
             delete_student
         ])
         .run(tauri::generate_context!())

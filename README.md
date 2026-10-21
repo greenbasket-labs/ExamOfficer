@@ -15,6 +15,7 @@ ExamOfficer is an offline-first school examination management desktop app built 
 - Configure position-based remarks for report cards.
 - View report cards and use the print dialog to print or save an individual report as PDF.
 - Store application records locally using SQLite for an offline-oriented workflow.
+- On the `feature/database-backup-restore` branch, Settings includes an initial database backup/restore implementation. It remains unverified until the Windows build and restore tests pass.
 
 ## Technology
 

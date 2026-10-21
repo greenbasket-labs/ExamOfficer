@@ -1339,3 +1339,43 @@ h1 {
     width: 100%;
   }
 }
+
+
+/* Report card print layout: print only the individual report card. */
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 12mm;
+  }
+
+  body * {
+    visibility: hidden !important;
+  }
+
+  .report-card-paper,
+  .report-card-paper * {
+    visibility: visible !important;
+  }
+
+  .report-card-paper {
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    max-width: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    color: #000 !important;
+    background: #fff !important;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  .report-card-paper table {
+    page-break-inside: avoid;
+  }
+}

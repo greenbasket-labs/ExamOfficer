@@ -86,6 +86,66 @@ type Student = {
   admissionDate: string;
 };
 
+type StudentImportPreviewRow = {
+  rowNumber: number;
+  firstName: string;
+  middleName: string;
+  lastName: string;
+  gender: string;
+  sectionName: string;
+  sectionCode: string;
+  className: string;
+  classId: number | null;
+  dateOfBirth: string;
+  admissionNumber: string;
+  guardianPhone: string;
+  errors: string[];
+  duplicate: boolean;
+};
+
+function parseCsv(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = "";
+  let quoted = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+    if (char === '"' && quoted && text[i + 1] === '"') {
+      cell += '"';
+      i += 1;
+    } else if (char === '"') {
+      quoted = !quoted;
+    } else if (char === "," && !quoted) {
+      row.push(cell.trim());
+      cell = "";
+    } else if ((char === "\n" || char === "\r") && !quoted) {
+      if (char === "\r" && text[i + 1] === "\n") i += 1;
+      row.push(cell.trim());
+      if (row.some((value) => value !== "")) rows.push(row);
+      row = [];
+      cell = "";
+    } else {
+      cell += char;
+    }
+  }
+  row.push(cell.trim());
+  if (row.some((value) => value !== "")) rows.push(row);
+  return rows;
+}
+
+function normalizeColumn(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function splitStudentName(value: string): { firstName: string; middleName: string; lastName: string } {
+  const parts = value.trim().split(/\s+/).filter(Boolean);
+  return {
+    firstName: parts[0] ?? "",
+    middleName: parts.length > 2 ? parts.slice(1, -1).join(" ") : "",
+    lastName: parts.length > 1 ? parts[parts.length - 1] : "",
+  };
+}
+
 type MarkEntryRow = {
   studentId: number;
   studentCode: string;
@@ -207,6 +267,11 @@ function App() {
   const [studentError, setStudentError] = useState("");
   const [studentMessage, setStudentMessage] = useState("");
   const [studentBusy, setStudentBusy] = useState(false);
+  const [studentImportRows, setStudentImportRows] = useState<StudentImportPreviewRow[]>([]);
+  const [studentImportFileName, setStudentImportFileName] = useState("");
+  const [studentImportError, setStudentImportError] = useState("");
+  const [studentImportMessage, setStudentImportMessage] = useState("");
+  const [studentImportBusy, setStudentImportBusy] = useState(false);
   const [markClassId, setMarkClassId] = useState<number | "">("");
   const [markSubjectId, setMarkSubjectId] = useState<number | "">("");
   const [markClassSubjects, setMarkClassSubjects] = useState<ClassSubject[]>([]);
@@ -333,6 +398,143 @@ function App() {
       setStudentError(String(error));
     } finally {
       setStudentBusy(false);
+    }
+  };
+
+  const previewStudentImport = async (file: File) => {
+    setStudentImportError("");
+    setStudentImportMessage("");
+    setStudentImportRows([]);
+    setStudentImportFileName(file.name);
+    if (!file.name.toLowerCase().endsWith(".csv")) {
+      setStudentImportError("Please choose a CSV file. In Excel, use Save As → CSV UTF-8 (Comma delimited) first.");
+      return;
+    }
+    try {
+      const matrix = parseCsv(await file.text());
+      if (matrix.length < 2) {
+        setStudentImportError("The CSV must contain a header row and at least one student.");
+        return;
+      }
+      const headers = matrix[0].map(normalizeColumn);
+      const indexOf = (...names: string[]) => headers.findIndex((header) => names.includes(header));
+      const nameIndex = indexOf("studentname", "name", "fullname");
+      const genderIndex = indexOf("gender");
+      const sectionIndex = indexOf("section", "schoolsection");
+      const classIndex = indexOf("class", "classname");
+      const dobIndex = indexOf("dateofbirthyyyymmdd", "dateofbirth", "dob");
+      const admissionIndex = indexOf("existingadmissionnumberoptional", "admissionnumber", "existingadmissionnumber");
+      const phoneIndex = indexOf("guardianphoneoptional", "guardianphone", "parentphone");
+      if (nameIndex < 0 || genderIndex < 0 || sectionIndex < 0 || classIndex < 0) {
+        setStudentImportError("Required columns not found. Include Student Name, Gender, Section, and Class in the CSV header.");
+        return;
+      }
+      const read = (row: string[], index: number) => index >= 0 ? (row[index] ?? "").trim() : "";
+      const seenInFile = new Set<string>();
+      const seenAdmissionNumbers = new Set<string>();
+      const preview = matrix.slice(1).map((row, offset): StudentImportPreviewRow => {
+        const fullName = read(row, nameIndex);
+        const names = splitStudentName(fullName);
+        const genderRaw = read(row, genderIndex);
+        const gender = /^female$/i.test(genderRaw) ? "Female" : /^male$/i.test(genderRaw) ? "Male" : genderRaw;
+        const sectionName = read(row, sectionIndex);
+        const sectionNorm = normalizeColumn(sectionName);
+        const expectedSectionCode = ({
+          nursery: "NUR",
+          primary: "PRI",
+          juniorsecondary: "JSS",
+          jss: "JSS",
+          seniorsecondary: "SS",
+          ss: "SS",
+          sss: "SS",
+        } as Record<string, string>)[sectionNorm] ?? "";
+        const className = read(row, classIndex);
+        const classRecord = classes.find((item) => item.name.trim().toLowerCase() === className.toLowerCase());
+        const errors: string[] = [];
+        if (!names.firstName || !names.lastName) errors.push("Enter a full name with at least two parts");
+        if (gender !== "Male" && gender !== "Female") errors.push("Gender must be Male or Female");
+        if (!sectionName) errors.push("Section is missing");
+        if (!className) errors.push("Class is missing");
+        if (className && !classRecord) errors.push("Class is not configured in Exam Officer");
+        if (classRecord && !classRecord.sectionCode) errors.push("Assign this class to a school section first");
+        if (classRecord && expectedSectionCode && classRecord.sectionCode?.toUpperCase() !== expectedSectionCode) errors.push("Section does not match the selected class");
+        if (sectionName && !expectedSectionCode) errors.push("Unrecognised section; use Nursery, Primary, Junior Secondary, or Senior Secondary");
+        const dob = read(row, dobIndex);
+        if (dob && !/^\d{4}-\d{2}-\d{2}$/.test(dob)) errors.push("Date of birth must use YYYY-MM-DD");
+        const key = `${names.firstName.toLowerCase()}|${names.middleName.toLowerCase()}|${names.lastName.toLowerCase()}|${classRecord?.id ?? className.toLowerCase()}`;
+        const admissionNumber = read(row, admissionIndex);
+        const existingDuplicate = Boolean(classRecord && students.some((item) =>
+          item.classId === classRecord.id &&
+          item.firstName.trim().toLowerCase() === names.firstName.toLowerCase() &&
+          item.middleName.trim().toLowerCase() === names.middleName.toLowerCase() &&
+          item.lastName.trim().toLowerCase() === names.lastName.toLowerCase()
+        ));
+        const repeatedInFile = seenInFile.has(key);
+        const repeatedAdmissionNumber = Boolean(admissionNumber && seenAdmissionNumbers.has(admissionNumber.toLowerCase()));
+        seenInFile.add(key);
+        if (admissionNumber) seenAdmissionNumbers.add(admissionNumber.toLowerCase());
+        const duplicate = existingDuplicate || repeatedInFile || repeatedAdmissionNumber;
+        if (existingDuplicate) errors.push("Student already exists in this class");
+        else if (repeatedInFile) errors.push("Duplicate row in this file");
+        if (repeatedAdmissionNumber) errors.push("Admission number is repeated in this file");
+        return {
+          rowNumber: offset + 2,
+          ...names,
+          gender,
+          sectionName,
+          sectionCode: classRecord?.sectionCode ?? expectedSectionCode,
+          className,
+          classId: classRecord?.id ?? null,
+          dateOfBirth: dob,
+          admissionNumber,
+          guardianPhone: read(row, phoneIndex),
+          errors,
+          duplicate,
+        };
+      });
+      setStudentImportRows(preview);
+      if (preview.length === 0) setStudentImportError("No student rows found in this CSV.");
+    } catch (error) {
+      setStudentImportError(`Could not read CSV file: ${String(error)}`);
+    }
+  };
+
+  const confirmStudentImport = async () => {
+    const validRows = studentImportRows.filter((row) => row.errors.length === 0 && row.classId !== null);
+    if (!validRows.length) {
+      setStudentImportError("There are no valid, non-duplicate students to import.");
+      return;
+    }
+    const confirmed = window.confirm(`Import ${validRows.length} new student(s)? Existing and duplicate rows will not be imported. No records will be changed for students already registered.`);
+    if (!confirmed) return;
+    setStudentImportBusy(true);
+    setStudentImportError("");
+    setStudentImportMessage("");
+    try {
+      const result = await invoke<{ createdCount: number; studentIds: string[] }>("import_students", {
+        schoolName,
+        idYear: (session.match(/\d{4}/)?.[0] ?? String(new Date().getFullYear())),
+        students: validRows.map((row) => ({
+          firstName: row.firstName,
+          middleName: row.middleName || null,
+          lastName: row.lastName,
+          gender: row.gender,
+          classId: row.classId,
+          sectionCode: row.sectionCode,
+          admissionDate: "",
+          admissionNumber: row.admissionNumber || null,
+          dateOfBirth: row.dateOfBirth || null,
+          guardianPhone: row.guardianPhone || null,
+        })),
+      });
+      await loadStudents();
+      setStudentImportMessage(`Successfully imported ${result.createdCount} student(s). IDs were generated automatically. ${studentImportRows.length - validRows.length} duplicate or invalid row(s) were skipped.`);
+      setStudentImportRows([]);
+      setStudentImportFileName("");
+    } catch (error) {
+      setStudentImportError(String(error));
+    } finally {
+      setStudentImportBusy(false);
     }
   };
 
@@ -1724,6 +1926,59 @@ function App() {
                 </form>
 
                 {classes.length === 0 && <p className="empty-state">Create a class in Classes & Subjects before registering students.</p>}
+              </section>
+
+              <section className="panel academic-panel">
+                <div className="section-heading">
+                  <div>
+                    <h2>Import students from CSV</h2>
+                    <p>Upload one combined list for Nursery, Primary, Junior Secondary, and Senior Secondary. Review the preview before approving any changes.</p>
+                  </div>
+                </div>
+                {studentImportError && <p role="alert">{studentImportError}</p>}
+                {studentImportMessage && <p role="status">{studentImportMessage}</p>}
+                <label className="field">
+                  <span>Student list (.csv)</span>
+                  <input type="file" accept=".csv,text/csv" disabled={studentImportBusy} onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (file) void previewStudentImport(file);
+                    event.currentTarget.value = "";
+                  }} />
+                </label>
+                {studentImportFileName && <p className="muted-copy">File: {studentImportFileName}</p>}
+                <p className="muted-copy">Required columns: Student Name, Gender, Section, Class. Optional columns: Date of Birth (YYYY-MM-DD), Existing Admission Number (optional), Guardian Phone (optional). Export the sample workbook's Students sheet as CSV UTF-8 before importing.</p>
+                {studentImportRows.length > 0 && (
+                  <>
+                    <div className="section-heading">
+                      <div>
+                        <h3>Import preview</h3>
+                        <p>{studentImportRows.filter((row) => row.errors.length === 0).length} ready · {studentImportRows.filter((row) => row.duplicate).length} duplicate(s) · {studentImportRows.filter((row) => row.errors.some((error) => !error.includes("already exists") && !error.includes("Duplicate row"))).length} row(s) with errors</p>
+                      </div>
+                    </div>
+                    <div className="table-scroll">
+                      <table className="data-table">
+                        <thead><tr><th>Row</th><th>Student</th><th>Section</th><th>Class</th><th>Status</th></tr></thead>
+                        <tbody>
+                          {studentImportRows.map((row) => (
+                            <tr key={row.rowNumber}>
+                              <td>{row.rowNumber}</td>
+                              <td>{[row.firstName, row.middleName, row.lastName].filter(Boolean).join(" ")}</td>
+                              <td>{row.sectionName}</td>
+                              <td>{row.className}</td>
+                              <td>{row.errors.length === 0 ? "Ready to import" : row.errors.join("; ")}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="academic-item-actions">
+                      <button className="primary-button" type="button" onClick={() => void confirmStudentImport()} disabled={studentImportBusy || studentImportRows.every((row) => row.errors.length > 0)}>
+                        {studentImportBusy ? "Importing..." : `Approve and import ${studentImportRows.filter((row) => row.errors.length === 0).length} student(s)`}
+                      </button>
+                      <button className="secondary-button" type="button" disabled={studentImportBusy} onClick={() => { setStudentImportRows([]); setStudentImportFileName(""); setStudentImportError(""); setStudentImportMessage(""); }}>Cancel preview</button>
+                    </div>
+                  </>
+                )}
               </section>
 
               <section className="panel academic-panel">

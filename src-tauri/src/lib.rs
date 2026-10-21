@@ -1,5 +1,6 @@
 ﻿use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use tauri::Manager;
 
 
@@ -1108,6 +1109,91 @@ fn get_mark_entries(
         .map_err(|e| format!("Cannot read marks: {e}"))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BulkMarkEntryInput {
+    student_id: i64,
+    subject_id: i64,
+    session: String,
+    term: String,
+    assessment_name: String,
+    score: f64,
+    max_score: f64,
+}
+
+#[tauri::command]
+fn import_mark_entries(
+    app: tauri::AppHandle,
+    entries: Vec<BulkMarkEntryInput>,
+) -> Result<usize, String> {
+    if entries.is_empty() {
+        return Err("The marks upload contains no records.".to_string());
+    }
+    if entries.len() > 5000 {
+        return Err("A single marks upload is limited to 5,000 records.".to_string());
+    }
+
+    let mut keys = HashSet::new();
+    let mut cleaned = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let session = clean_name(entry.session, "Academic session")?;
+        let term = clean_name(entry.term, "Term")?;
+        let assessment_name = clean_name(entry.assessment_name, "Assessment name")?;
+        if entry.student_id <= 0 || entry.subject_id <= 0 {
+            return Err("Each mark must identify a valid student and subject.".to_string());
+        }
+        if !entry.score.is_finite()
+            || !entry.max_score.is_finite()
+            || entry.max_score <= 0.0
+            || entry.score < 0.0
+            || entry.score > entry.max_score
+        {
+            return Err("Every score must be between zero and its positive maximum mark. No marks were imported.".to_string());
+        }
+        let key = (entry.student_id, entry.subject_id, session.clone(), term.clone(), assessment_name.to_lowercase());
+        if !keys.insert(key) {
+            return Err("The upload contains duplicate records for the same student, subject, session, term, and assessment. No marks were imported.".to_string());
+        }
+        cleaned.push((entry.student_id, entry.subject_id, session, term, assessment_name, entry.score, entry.max_score));
+    }
+
+    let mut connection = database_connection(&app)?;
+    let transaction = connection.transaction()
+        .map_err(|e| format!("Cannot start marks import transaction: {e}"))?;
+
+    for (student_id, subject_id, _, _, _, _, _) in &cleaned {
+        let student_class: Option<i64> = transaction.query_row(
+            "SELECT class_id FROM students WHERE id = ?1",
+            params![student_id],
+            |row| row.get(0),
+        ).optional().map_err(|e| format!("Cannot validate student record: {e}"))?;
+        let class_id = student_class.ok_or_else(|| "A student record in the upload no longer exists. No marks were imported.".to_string())?;
+        let assigned: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM class_subjects WHERE class_id = ?1 AND subject_id = ?2)",
+            params![class_id, subject_id],
+            |row| row.get(0),
+        ).map_err(|e| format!("Cannot validate class-subject assignment: {e}"))?;
+        if !assigned {
+            return Err("A subject is not assigned to one of the selected students' classes. No marks were imported.".to_string());
+        }
+    }
+
+    for (student_id, subject_id, session, term, assessment_name, score, max_score) in &cleaned {
+        transaction.execute(
+            "INSERT INTO mark_entries
+                (student_id, subject_id, session, term, assessment_name, score, max_score, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP)
+             ON CONFLICT(student_id, subject_id, session, term, assessment_name)
+             DO UPDATE SET score = excluded.score, max_score = excluded.max_score,
+                           updated_at = CURRENT_TIMESTAMP",
+            params![student_id, subject_id, session, term, assessment_name, score, max_score],
+        ).map_err(|e| format!("Cannot save marks import; transaction was rolled back: {e}"))?;
+    }
+
+    transaction.commit().map_err(|e| format!("Cannot commit marks import: {e}"))?;
+    Ok(cleaned.len())
+}
+
 #[tauri::command]
 fn save_mark_entry(
     app: tauri::AppHandle,
@@ -1371,6 +1457,7 @@ pub fn run() {
             remove_class_subject,
             get_mark_entries,
             save_mark_entry,
+            import_mark_entries,
             get_class_results,
             get_grade_remark_rules,
             save_grade_remark_rules,

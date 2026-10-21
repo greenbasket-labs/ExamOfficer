@@ -781,7 +781,7 @@ function App() {
     finally { setGradeSettingsBusy(false); }
   };
 
-  useEffect(() => { if (page === "Settings") void loadGradeSettings(); }, [page]);
+  useEffect(() => { if (page === "Settings" || page === "Report Cards") void loadGradeSettings(); }, [page]);
 
   const loadClassResults = async () => {
     setResultError("");

@@ -189,6 +189,24 @@ type MarkEntryRow = {
   maxScore: number | null;
 };
 
+type BulkMarkImportRow = {
+  rowNumber: number;
+  studentId: number | null;
+  studentCode: string;
+  studentName: string;
+  className: string;
+  subjectName: string;
+  subjectId: number | null;
+  session: string;
+  term: string;
+  assessmentName: string;
+  score: number | null;
+  maxScore: number | null;
+  existing: boolean;
+  existingScore: number | null;
+  errors: string[];
+};
+
 type ClassResultRow = {
   studentId: number;
   studentCode: string;
@@ -317,6 +335,12 @@ function App() {
   const [markError, setMarkError] = useState("");
   const [markMessage, setMarkMessage] = useState("");
   const [markBusy, setMarkBusy] = useState(false);
+  const [bulkMarkRows, setBulkMarkRows] = useState<BulkMarkImportRow[]>([]);
+  const [bulkMarkFileName, setBulkMarkFileName] = useState("");
+  const [bulkMarkError, setBulkMarkError] = useState("");
+  const [bulkMarkMessage, setBulkMarkMessage] = useState("");
+  const [bulkMarkBusy, setBulkMarkBusy] = useState(false);
+  const [bulkMarkAllowOverwrite, setBulkMarkAllowOverwrite] = useState(false);
   const [resultClassId, setResultClassId] = useState<number | "">("");
   const [resultRows, setResultRows] = useState<ClassResultRow[]>([]);
   const [resultError, setResultError] = useState("");
@@ -940,6 +964,165 @@ function App() {
       setMarkError(String(error));
     } finally {
       setMarkBusy(false);
+    }
+  };
+
+  const previewBulkMarkImport = async (file: File) => {
+    setBulkMarkFileName(file.name);
+    setBulkMarkRows([]);
+    setBulkMarkError("");
+    setBulkMarkMessage("");
+    setBulkMarkAllowOverwrite(false);
+    if (!file.name.toLowerCase().endsWith(".csv")) {
+      setBulkMarkError("Please choose a CSV file. Save Excel workbooks as CSV UTF-8 first.");
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setBulkMarkError("The marks CSV must be smaller than 5 MB.");
+      return;
+    }
+    try {
+      const matrix = parseCsv(await file.text());
+      if (matrix.length < 2) {
+        setBulkMarkError("The CSV must contain a header row and at least one marks record.");
+        return;
+      }
+      const headers = matrix[0].map(normalizeColumn);
+      const indexOf = (...names: string[]) => headers.findIndex((header) => names.includes(header));
+      const studentCodeIndex = indexOf("studentid", "studentcode", "permanentstudentid");
+      const classIndex = indexOf("classname", "class");
+      const subjectIndex = indexOf("subject", "subjectname");
+      const sessionIndex = indexOf("academicsession", "session");
+      const termIndex = indexOf("term", "academicterm");
+      const assessmentIndex = indexOf("assessment", "assessmentname", "assessmentlabel");
+      const scoreIndex = indexOf("score", "mark", "marks");
+      const maxScoreIndex = indexOf("maxscore", "maxmark", "maximumscore", "maximummark");
+      const nameIndex = indexOf("studentname", "name", "fullname");
+      const required = [
+        ["Student ID", studentCodeIndex], ["Class", classIndex], ["Subject", subjectIndex],
+        ["Academic session", sessionIndex], ["Term", termIndex], ["Assessment", assessmentIndex],
+        ["Score", scoreIndex], ["Maximum mark", maxScoreIndex],
+      ] as const;
+      const missing = required.filter(([, index]) => index < 0).map(([label]) => label);
+      if (missing.length) {
+        setBulkMarkError(`Missing required CSV columns: ${missing.join(", ")}.`);
+        return;
+      }
+      const [loadedStudents, loadedClasses, loadedSubjects] = await Promise.all([
+        invoke<Student[]>("get_students"),
+        invoke<SchoolClass[]>("get_classes"),
+        invoke<Subject[]>("get_subjects"),
+      ]);
+      const read = (row: string[], index: number) => (row[index] ?? "").trim();
+      const classSubjectsCache = new Map<number, Set<number>>();
+      const existingCache = new Map<string, Map<string, { score: number; maxScore: number }>>();
+      const seen = new Set<string>();
+      const preview: BulkMarkImportRow[] = [];
+      for (const [offset, row] of matrix.slice(1).entries()) {
+        const studentCode = read(row, studentCodeIndex);
+        const className = read(row, classIndex);
+        const subjectName = read(row, subjectIndex);
+        const rowSession = read(row, sessionIndex);
+        const rowTerm = read(row, termIndex);
+        const assessmentName = read(row, assessmentIndex);
+        const scoreText = read(row, scoreIndex);
+        const maxText = read(row, maxScoreIndex);
+        const score = scoreText === "" ? null : Number(scoreText);
+        const maxScore = maxText === "" ? null : Number(maxText);
+        const student = loadedStudents.find((item) => item.studentId.trim().toLowerCase() === studentCode.toLowerCase());
+        const classItem = loadedClasses.find((item) => normalizeColumn(item.name) === normalizeColumn(className));
+        const subject = loadedSubjects.find((item) => normalizeColumn(item.name) === normalizeColumn(subjectName));
+        const errors: string[] = [];
+        if (!studentCode) errors.push("Missing student ID");
+        if (!student) errors.push("Student ID not found");
+        if (!className) errors.push("Missing class");
+        if (!classItem) errors.push("Class not found");
+        if (student && classItem && student.classId !== classItem.id) errors.push("Student does not belong to this class");
+        if (!subjectName) errors.push("Missing subject");
+        if (!subject) errors.push("Subject not found");
+        if (!rowSession || rowSession !== session.trim()) errors.push(`Session must match School Setup (${session})`);
+        if (!rowTerm || rowTerm !== term) errors.push(`Term must match School Setup (${term})`);
+        if (!assessmentName) errors.push("Missing assessment label");
+        if (score === null || maxScore === null || !Number.isFinite(score) || !Number.isFinite(maxScore) || maxScore <= 0 || score < 0 || score > maxScore) {
+          errors.push("Score must be between 0 and a positive maximum mark");
+        }
+        let existing = false;
+        let existingScore: number | null = null;
+        if (student && classItem && subject) {
+          if (!classSubjectsCache.has(classItem.id)) {
+            const assigned = await invoke<ClassSubject[]>("get_class_subjects", { classId: classItem.id });
+            classSubjectsCache.set(classItem.id, new Set(assigned.map((item) => item.subjectId)));
+          }
+          if (!classSubjectsCache.get(classItem.id)?.has(subject.id)) errors.push("Subject is not assigned to this class");
+          const cacheKey = [classItem.id, subject.id, rowSession, rowTerm, assessmentName].join("|");
+          if (!existingCache.has(cacheKey)) {
+            const records = await invoke<MarkEntryRow[]>("get_mark_entries", {
+              classId: classItem.id, subjectId: subject.id, session: rowSession, term: rowTerm, assessmentName,
+            });
+            existingCache.set(cacheKey, new Map(records.filter((item) => item.score !== null).map((item) => [
+              item.studentCode.toLowerCase(), { score: item.score as number, maxScore: item.maxScore as number },
+            ])));
+          }
+          const saved = existingCache.get(cacheKey)?.get(studentCode.toLowerCase());
+          if (saved) { existing = true; existingScore = saved.score; }
+        }
+        const duplicateKey = [studentCode.toLowerCase(), normalizeColumn(subjectName), rowSession, rowTerm, assessmentName.toLowerCase()].join("|");
+        if (seen.has(duplicateKey)) errors.push("Duplicate student/subject/assessment row in this file");
+        seen.add(duplicateKey);
+        preview.push({
+          rowNumber: offset + 2, studentId: student?.id ?? null, studentCode,
+          studentName: student ? [student.firstName, student.middleName, student.lastName].filter(Boolean).join(" ") : read(row, nameIndex),
+          className, subjectName, subjectId: subject?.id ?? null, session: rowSession, term: rowTerm,
+          assessmentName, score, maxScore, existing, existingScore, errors,
+        });
+      }
+      setBulkMarkRows(preview);
+      if (preview.length === 0) setBulkMarkError("No marks records were found in the CSV.");
+      else if (preview.every((item) => item.errors.length === 0)) setBulkMarkMessage(`Preview ready: ${preview.length} marks records checked. Nothing has been saved yet.`);
+    } catch (error) {
+      setBulkMarkError(String(error));
+    }
+  };
+
+  const importBulkMarks = async () => {
+    setBulkMarkError("");
+    setBulkMarkMessage("");
+    const invalid = bulkMarkRows.filter((row) => row.errors.length > 0);
+    if (bulkMarkRows.length === 0) {
+      setBulkMarkError("Choose and preview a marks CSV first.");
+      return;
+    }
+    if (invalid.length > 0) {
+      setBulkMarkError(`Fix the ${invalid.length} invalid row(s) before importing. No marks were saved.`);
+      return;
+    }
+    const overwriteCount = bulkMarkRows.filter((row) => row.existing).length;
+    if (overwriteCount > 0 && !bulkMarkAllowOverwrite) {
+      setBulkMarkError(`The file would update ${overwriteCount} existing mark(s). Tick the overwrite confirmation before importing.`);
+      return;
+    }
+    setBulkMarkBusy(true);
+    try {
+      const imported = await invoke<number>("import_mark_entries", {
+        entries: bulkMarkRows.map((row) => ({
+          studentId: row.studentId,
+          subjectId: row.subjectId,
+          session: row.session,
+          term: row.term,
+          assessmentName: row.assessmentName,
+          score: row.score,
+          maxScore: row.maxScore,
+        })),
+      });
+      setBulkMarkMessage(`Successfully imported ${imported} mark record(s). Existing marks were updated only because overwrite was confirmed.`);
+      setBulkMarkRows([]);
+      setBulkMarkFileName("");
+      setBulkMarkAllowOverwrite(false);
+      if (markClassId !== "") await loadMarkRows();
+    } catch (error) {
+      setBulkMarkError(String(error));
+    } finally {
+      setBulkMarkBusy(false);
     }
   };
 
@@ -2099,6 +2282,36 @@ function App() {
               <p className="page-subtitle">Enter marks against each student's permanent record. Scores are saved locally on this computer.</p>
               {markError && <div className="save-message error-message" role="alert">{markError}</div>}
               {markMessage && <div className="save-message" role="status">{markMessage}</div>}
+              <section className="panel academic-panel">
+                <div className="section-heading"><div><h2>Upload marks from CSV</h2><p>Import marks for multiple students and subjects in one file. Review every row before saving.</p></div></div>
+                {bulkMarkError && <div className="save-message error-message" role="alert">{bulkMarkError}</div>}
+                {bulkMarkMessage && <div className="save-message" role="status">{bulkMarkMessage}</div>}
+                <label className="field"><span>Marks CSV file</span>
+                  <input type="file" accept=".csv,text/csv" disabled={bulkMarkBusy} onChange={(event) => { const file = event.target.files?.[0]; if (file) void previewBulkMarkImport(file); }} />
+                </label>
+                {bulkMarkFileName && <p className="page-subtitle">Selected file: <strong>{bulkMarkFileName}</strong>. CSV must include Student ID, Class, Subject, Academic Session, Term, Assessment, Score, and Maximum Mark.</p>}
+                {bulkMarkRows.length > 0 && (
+                  <div className="academic-list">
+                    <div className="section-heading"><div><h3>Import preview</h3><p>{bulkMarkRows.length} record(s) · {bulkMarkRows.filter((row) => row.errors.length === 0).length} valid · {bulkMarkRows.filter((row) => row.errors.length > 0).length} with errors · {bulkMarkRows.filter((row) => row.existing).length} existing mark(s)</p></div></div>
+                    <div style={{ overflowX: "auto" }}>
+                      <table className="data-table">
+                        <thead><tr><th>CSV row</th><th>Student ID</th><th>Student</th><th>Class</th><th>Subject</th><th>Score</th><th>Status</th></tr></thead>
+                        <tbody>{bulkMarkRows.map((row) => <tr key={row.rowNumber}>
+                          <td>{row.rowNumber}</td><td>{row.studentCode}</td><td>{row.studentName}</td><td>{row.className}</td><td>{row.subjectName}</td>
+                          <td>{row.score ?? "—"} / {row.maxScore ?? "—"}</td>
+                          <td>{row.errors.length ? row.errors.join("; ") : row.existing ? `Will update existing ${row.existingScore}` : "Ready to import"}</td>
+                        </tr>)}</tbody>
+                      </table>
+                    </div>
+                    {bulkMarkRows.some((row) => row.existing) && <label className="field" style={{ marginTop: "12px" }}>
+                      <span><input type="checkbox" checked={bulkMarkAllowOverwrite} onChange={(event) => setBulkMarkAllowOverwrite(event.target.checked)} disabled={bulkMarkBusy} /> I explicitly approve updating existing marks shown in this preview.</span>
+                    </label>}
+                    <button className="primary-button" type="button" onClick={() => void importBulkMarks()} disabled={bulkMarkBusy || bulkMarkRows.some((row) => row.errors.length > 0) || (bulkMarkRows.some((row) => row.existing) && !bulkMarkAllowOverwrite)}>
+                      {bulkMarkBusy ? "Importing marks..." : `Import ${bulkMarkRows.length} mark records`}
+                    </button>
+                  </div>
+                )}
+              </section>
               <section className="panel academic-panel">
                 <div className="section-heading"><div><h2>Assessment details</h2><p>Choose the class, subject and assessment being marked.</p></div></div>
                 <div className="assignment-form">

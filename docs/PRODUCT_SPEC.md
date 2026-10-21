@@ -108,3 +108,24 @@ Do not assume that desktop dialogs, file paths, or image acquisition APIs work t
 ## 10. Definition of a trustworthy first release
 
 A school can configure itself, create classes and subjects, register students, enter and calculate marks, define grading, record attendance, produce reports, back up and restore all records, and protect access with an optional PIN—without internet or a required Gmail account. Every advertised workflow must pass documented tests on each supported platform.
+
+
+## 11. Bulk result-list import and ranking (added requirement)
+
+### 11.1 Teacher-prepared result lists
+The app must remain useful when all marking is performed manually. A teacher may compile a list of students and their completed marks in a supported tabular format and import it in bulk. The first supported format should be a clearly documented CSV template; spreadsheet formats may follow if practical.
+
+Before writing any imported data, show a preview and validate required columns, student IDs, class/subject context, score ranges, and duplicate rows. Match primarily by the school's unique student ID. Names and class may help resolve a match, but ambiguous matches must be shown for human confirmation. Never silently attach an imported mark to a guessed student.
+
+Support partial imports: valid rows may be accepted only after the user reviews a summary of accepted, rejected, unmatched, and duplicate rows. Preserve the source filename, import time, and batch fingerprint for audit and duplicate detection. Re-importing the same file/batch should be detected; the same score on a genuinely different assessment must remain allowed.
+
+### 11.2 Results compilation and class positions
+After marks are compiled according to the school's configured rules, calculate totals/aggregates and rank all students in each class from first to last. Missing marks must not silently become zero unless a school explicitly configures and confirms that rule. Absent, exempt, and incomplete records should be handled distinctly where applicable.
+
+Tie handling must be consistent and documented (recommended default: competition ranking, e.g. 1, 2, 2, 4, with tied students sharing a position). The report should make ties visible.
+
+### 11.3 Overall school ranking
+Allow the school to choose a top-N list for an overall school ranking (for example, top 3, 6, or 10). Before computing it, the app must use an explicitly selected and validated comparison scope, such as a specified set of classes/sections in the same year/term and a compatible ranking metric. Do not compare unlike totals across classes with different maximum scores or subject sets without an explicit comparable aggregate rule. Clearly label the scope used for the list.
+
+### 11.4 Teacher and principal remarks
+Provide school-configurable remark options/templates for teacher and principal/headteacher remarks. The school may define its own wording and rules. Any automatically suggested remark must be traceable to a configured rule and editable by authorized school staff before the report is finalized. Do not hardcode one school's grading or remark scheme for every school.

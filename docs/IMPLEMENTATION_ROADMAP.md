@@ -14,8 +14,9 @@ This roadmap is sequenced to reduce risk and preserve the existing code. It is n
 
 **Exit gate:** Existing school/class/subject/student workflows have been verified locally; no destructive schema changes are made without migration and backup.
 
-## Phase 1 — Data integrity and foundation
+## Phase 1 — Data integrity and foundation (Windows + Android baseline)
 
+- Set up an early Android build/install smoke test alongside Windows verification; record any platform blockers before adding camera or document workflows.
 - Introduce explicit schema versioning and migrations.
 - Review deletion rules and relationships so deleting a class/student cannot silently destroy relevant marks or historical reports.
 - Add school abbreviation/ID fields if needed and optional safe student-ID generation with uniqueness checks.
@@ -68,9 +69,11 @@ This roadmap is sequenced to reduce risk and preserve the existing code. It is n
 
 **Exit gate:** A test backup restores the same school, classes, subjects, students, marks, settings, and attendance; malformed files do not corrupt live data.
 
-## Phase 6 — Android and mobile workflow
+## Phase 6 — Android device-specific workflow validation
 
-- Set up Tauri Android prerequisites and build configuration.
+Android is a first-release target, so basic build feasibility is checked in Phase 1. This phase completes the device-specific workflows after the shared core is ready.
+
+- Complete Tauri Android prerequisites and build configuration.
 - Test local SQLite persistence, app lifecycle, rotation, and small-screen layouts.
 - Validate document selection, camera/gallery access, image import, and export/save destinations.
 - Test offline operation and Android permission denial/retry behavior.
@@ -117,4 +120,4 @@ This roadmap is sequenced to reduce risk and preserve the existing code. It is n
 - [ ] Optional PIN behavior is verified and documented.
 - [ ] Offline operation is confirmed.
 - [ ] Windows workflow passes on a clean test profile.
-- [ ] Android workflow passes on a real device before Android is advertised as supported.
+- [ ] Android build/install smoke test is completed early, and full supported workflows pass on a real device before Android is advertised as supported.

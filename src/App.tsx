@@ -1992,8 +1992,8 @@ function App() {
                 {studentImportError && <p role="alert">{studentImportError}</p>}
                 {studentImportMessage && <p role="status">{studentImportMessage}</p>}
                 <label className="field">
-                  <span>Student list (.csv)</span>
-                  <input type="file" accept=".csv,text/csv" disabled={studentImportBusy} onChange={(event) => {
+                  <span>Student list (.csv or .pdf)</span>
+                  <input type="file" accept=".csv,.pdf,text/csv,application/pdf" disabled={studentImportBusy} onChange={(event) => {
                     const file = event.target.files?.[0];
                     if (file) void previewStudentImport(file);
                     event.currentTarget.value = "";

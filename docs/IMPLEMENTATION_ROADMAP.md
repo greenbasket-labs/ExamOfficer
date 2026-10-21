@@ -114,6 +114,10 @@ Android is a first-release target, so basic build feasibility is checked in Phas
 - [ ] Grading boundaries and aggregates match hand calculations.
 - [ ] Attendance totals use the documented denominator.
 - [ ] Reports handle missing marks and zero scores distinctly.
+- [ ] CSV result-list import previews rows, matches by student ID, and flags invalid, unmatched, duplicate, and ambiguous rows.
+- [ ] Class positions rank all students and handle ties consistently.
+- [ ] Overall school top-N ranking uses a validated comparison scope and compatible aggregate metric.
+- [ ] Teacher and principal remarks follow school-configured templates/rules and remain reviewable.
 - [ ] PDF export opens and is readable.
 - [ ] Structured backup restores the database and relationships.
 - [ ] Invalid backup is rejected without corrupting live data.

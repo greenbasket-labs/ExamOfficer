@@ -904,9 +904,10 @@ fn import_students(
     for (first_name, middle_name, last_name, gender, class_id, section_code, admission_date, admission_number, date_of_birth, guardian_phone) in &prepared {
         let mut generated_id = String::new();
         for _ in 0..100 {
-            let random_number: i64 = transaction.query_row("SELECT abs(random()) % 10000", [], |row| row.get(0))
+            let random_number: i64 = transaction.query_row("SELECT abs(random() % 10000)", [], |row| row.get(0))
                 .map_err(|e| format!("Cannot generate a student ID: {e}"))?;
-            let candidate = format!("{school_code}-{id_year}-{section_code}-{random_number:04}");
+            let id_section_code = if section_code == "SS" { "SSS" } else { section_code.as_str() };
+            let candidate = format!("{school_code}-{id_year}-{id_section_code}-{random_number:04}");
             let used: bool = transaction.query_row(
                 "SELECT EXISTS(SELECT 1 FROM students WHERE student_id = ?1)",
                 params![candidate],
